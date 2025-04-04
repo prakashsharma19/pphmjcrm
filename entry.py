@@ -76,6 +76,7 @@ def initialize_firebase():
             
         # Try to get config from environment variable
         firebase_config = os.environ.get("FIREBASE_CONFIG", "firebase-key.json")
+        firebase_admin.initialize_app(cred)
         
         if not os.path.exists(firebase_config):
             st.session_state.cloud_status = "Error"
