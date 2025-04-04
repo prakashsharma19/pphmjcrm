@@ -83,7 +83,7 @@ def initialize_firebase():
             return False
 
         # Initialize Firebase
-        cred = credentials.Certificate(firebase_config)
+        cred = credentials.Certificate(firebase-key.json)
         firebase_admin.initialize_app(cred)
         st.session_state.cloud_status = "Connected"
         return True
