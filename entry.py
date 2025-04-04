@@ -999,7 +999,7 @@ def show_entry_module():
         show_login_page()
         return
 
-    st.title("📚 PPH CRM - Entry Module")
+    st.title("📚 PPH CRM - Entry")
     
     if logo:
         st.image(logo, width=100)
@@ -1367,4 +1367,4 @@ else:
 # FOOTER
 # ======================
 st.markdown("---")
-st.markdown("**PPH CRM - Author Database Manager**")
+st.markdown("**PPH CRM - Contact App Administrator for any help at contact@cpsharma.com**")
