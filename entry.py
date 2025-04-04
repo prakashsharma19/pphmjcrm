@@ -74,8 +74,21 @@ def initialize_firebase():
             st.session_state.cloud_status = "Connected"
             return True
             
-        # Try to get config from environment variable
         firebase_config = os.environ.get("FIREBASE_CONFIG", "firebase-key.json")
+
+# Check if firebase_config is a file path or a JSON string
+if os.path.exists(firebase_config):
+    cred = credentials.Certificate(firebase_config)
+elif firebase_config.startswith("{"):  # Check if it's a JSON string
+    import json
+    cred = credentials.Certificate(json.loads(firebase_config))
+else:
+    st.session_state.cloud_status = "Error"
+    st.session_state.cloud_error = "Invalid Firebase config"
+    return False
+
+firebase_admin.initialize_app(cred)
+
         firebase_admin.initialize_app(cred)
         
         if not os.path.exists(firebase_config):
