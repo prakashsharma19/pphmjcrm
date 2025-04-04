@@ -11,6 +11,7 @@ from PIL import Image
 import requests
 from io import BytesIO
 from dotenv import load_dotenv
+import json
 
 # Load environment variables from .env file
 load_dotenv()
@@ -50,7 +51,7 @@ def init_session_state():
         'cloud_error': '',
         'ai_error': '',
         'show_all_entries': False,
-        'manual_api_key': 'AIzaSyBIXgqTphaQq8u3W5A4HRHVhwBp_fbnfsg',  # Auto-filled API key
+        'manual_api_key': 'AIzaSyBIXgqTphaQq8u3W5A4HRHVhwBp_fbnfsg',
         'show_api_key_input': False,
         'delete_duplicates_mode': False
     }
@@ -74,29 +75,24 @@ def initialize_firebase():
             st.session_state.cloud_status = "Connected"
             return True
             
-        firebase_config = os.environ.get("FIREBASE_CONFIG", "firebase-key.json")
+        # Load Firebase config from Streamlit secrets
+        firebase_config = {
+            "type": st.secrets["firebase"]["type"],
+            "project_id": st.secrets["firebase"]["project_id"],
+            "private_key_id": st.secrets["firebase"]["private_key_id"],
+            "private_key": st.secrets["firebase"]["private_key"].replace('\\n', '\n'),
+            "client_email": st.secrets["firebase"]["client_email"],
+            "client_id": st.secrets["firebase"]["client_id"],
+            "auth_uri": st.secrets["firebase"]["auth_uri"],
+            "token_uri": st.secrets["firebase"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"],
+            "universe_domain": st.secrets["firebase"]["universe_domain"]
+        }
 
-        # Check if firebase_config is a file path or a JSON string
-        if os.path.exists(firebase_config):
-            cred = credentials.Certificate(firebase_config)
-        elif firebase_config.startswith("{"):  # Check if it's a JSON string
-            import json
-            cred = credentials.Certificate(json.loads(firebase_config))
-        else:
-            st.session_state.cloud_status = "Error"
-            st.session_state.cloud_error = "Invalid Firebase config"
-            return False
-
+        cred = credentials.Certificate(firebase_config)
         firebase_admin.initialize_app(cred)
         
-        if not os.path.exists(firebase_config):
-            st.session_state.cloud_status = "Error"
-            st.session_state.cloud_error = f"Firebase config file not found at: {firebase_config}"
-            return False
-
-        # Initialize Firebase
-        cred = credentials.Certificate("firebase-key.json")
-        firebase_admin.initialize_app(cred)
         st.session_state.cloud_status = "Connected"
         return True
         
