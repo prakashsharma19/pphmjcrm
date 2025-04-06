@@ -1242,7 +1242,7 @@ def show_entry_module():
     elif app_mode == "🗂 Manage Journals":
         st.header("🗂 Manage Journals")
         
-        tab1, tab2 = st.tabs(["View Journals", "Create New Journal"])
+        tab1, tab2 = st.tabs(["View Journals", "Create New Journal/Folders"])
         
         with tab1:
             st.subheader("Available Journals")
