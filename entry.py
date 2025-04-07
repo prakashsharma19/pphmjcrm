@@ -12,9 +12,14 @@ import requests
 from io import BytesIO
 from dotenv import load_dotenv
 import json
+import spacy
+from spacy.matcher import Matcher
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Load English language model for spaCy
+nlp = spacy.load("en_core_web_sm")
 
 # ======================
 # INITIALIZATION
@@ -55,7 +60,8 @@ def init_session_state():
         'show_api_key_input': False,
         'delete_duplicates_mode': False,
         'show_connection_status': False,
-        'app_mode': "🔍 Search Database"
+        'app_mode': "✏️ Create Entries",  # Changed default to Create Entries
+        'show_formatted_entries': False  # Added for toggle formatted entries
     }
     
     for key, default_value in session_vars.items():
@@ -65,6 +71,128 @@ def init_session_state():
 # MUST BE FIRST STREAMLIT COMMAND
 st.set_page_config(page_title="PPH CRM", layout="wide", initial_sidebar_state="expanded")
 init_session_state()
+
+# ======================
+# NLP PROCESSING FUNCTIONS
+# ======================
+def extract_department(text):
+    """Extract department from text, prioritizing 'Department' over 'School'"""
+    doc = nlp(text)
+    department = ""
+    school = ""
+    
+    # Patterns to match department and school
+    patterns = {
+        "department": [{"LOWER": "department"}, {"LOWER": "of"}, {}],
+        "school": [{"LOWER": "school"}, {"LOWER": "of"}, {}]
+    }
+    
+    matcher = Matcher(nlp.vocab)
+    matcher.add("DEPARTMENT", [patterns["department"]])
+    matcher.add("SCHOOL", [patterns["school"]])
+    
+    matches = matcher(doc)
+    
+    for match_id, start, end in matches:
+        string_id = nlp.vocab.strings[match_id]
+        span = doc[start:end]
+        
+        if string_id == "DEPARTMENT":
+            department = span.text
+        elif string_id == "SCHOOL" and not department:
+            school = span.text
+    
+    return department if department else school
+
+def extract_university(text):
+    """Extract university from text"""
+    doc = nlp(text)
+    
+    # Look for organizations that are likely universities
+    for ent in doc.ents:
+        if ent.label_ == "ORG" and ("university" in ent.text.lower() or "institute" in ent.text.lower()):
+            return ent.text
+    
+    # Fallback to finding "University" in text
+    for token in doc:
+        if token.text.lower() == "university":
+            start = token.i
+            # Get the full university name
+            while start > 0 and doc[start-1].ent_type_ in ("", "ORG"):
+                start -= 1
+            return doc[start:token.i+1].text
+    
+    return ""
+
+def extract_country(text):
+    """Extract country from text"""
+    doc = nlp(text)
+    
+    for ent in doc.ents:
+        if ent.label_ == "GPE" and len(ent.text.split()) <= 3:
+            return ent.text
+    
+    return ""
+
+def extract_email(text):
+    """Extract email from text"""
+    doc = nlp(text)
+    
+    for token in doc:
+        if "@" in token.text:
+            # Clean up email
+            email = token.text.lower()
+            email = email.replace("(at)", "@").replace("[at]", "@")
+            email = email.replace("(dot)", ".").replace("[dot]", ".")
+            email = email.replace(" ", "")
+            return email
+    
+    return ""
+
+def format_with_nlp(entry):
+    """Format entry using NLP before sending to AI"""
+    lines = [line.strip() for line in entry.split('\n') if line.strip()]
+    
+    # Extract name (first line is usually name)
+    name = lines[0].replace("Prof.", "").replace("Professor", "").strip()
+    if not name:
+        return None
+    
+    # Join all lines for processing
+    full_text = " ".join(lines)
+    
+    # Extract components
+    department = extract_department(full_text)
+    university = extract_university(full_text)
+    country = extract_country(full_text)
+    email = extract_email(full_text)
+    
+    if not email:
+        return None
+    
+    # Build formatted entry
+    formatted_lines = [f"Professor {name}"]
+    if department:
+        formatted_lines.append(department)
+    if university:
+        formatted_lines.append(university)
+    if country:
+        formatted_lines.append(country)
+    formatted_lines.append(email)
+    
+    return "\n".join(formatted_lines)
+
+def preprocess_with_nlp(text):
+    """Process raw text with NLP before AI formatting"""
+    entries = [entry.strip() for entry in text.split("\n\n") if entry.strip()]
+    formatted_entries = []
+    
+    for entry in entries:
+        formatted = format_with_nlp(entry)
+        if formatted:
+            formatted_entries.append(formatted)
+    
+    return "\n\n".join(formatted_entries)
 
 # ======================
 # FIREBASE INITIALIZATION
@@ -184,7 +312,7 @@ def test_service_connections():
                 break
                 
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-2.0-flash")
+            model = genai.GenerativeModel("gemini-1.5-flash-latest")
             response = model.generate_content("Test connection")
             if response.text:
                 st.session_state.ai_status = "Connected"
@@ -418,8 +546,15 @@ def format_entries_chunked(text, progress_bar, status_text):
         return ""
         
     start_time = time.time()
+    
+    # First process with NLP
+    nlp_processed = preprocess_with_nlp(text)
+    if not nlp_processed:
+        return ""
+    
+    # Then refine with AI
     chunk_size = 10000
-    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+    chunks = [nlp_processed[i:i+chunk_size] for i in range(0, len(nlp_processed), chunk_size)]
     formatted_parts = []
     total_chunks = len(chunks)
     
@@ -436,53 +571,29 @@ def format_entries_chunked(text, progress_bar, status_text):
         progress_bar.progress(progress)
         status_text.text(f"Processing {chunks_processed}/{total_chunks} (Est. remaining: {format_time(remaining_time)})")
         
-        prompt = f"""Format these author entries exactly like this example:
+        prompt = f"""Refine these pre-processed author entries to ensure consistent formatting:
 
+Professor First Name Last Name
+Department (if available)
+University/Organization
+Country
+email@domain.com
+
+RULES:
+1. Keep only the corresponding address if multiple exist
+2. Remove all street addresses, postal codes, etc. - keep only country
+3. Prioritize Department over School if both exist
+4. Remove any additional information like phone numbers, ORCID, etc.
+5. Ensure email is clean and properly formatted
+
+Example of correct formatting:
 Professor John Smith
-Computer Science Department
-Artificial Intelligence Laboratory
+Department of Computer Science
 Stanford University
-353 Serra Mall, Palo Alto, CA 94305
 United States
 jsmith@stanford.edu
 
-CRITICAL FORMATTING RULES:
-1. MANDATORY: Exclude any entry that doesn't have both a name AND an email address
-2. Always prefix the name with "Professor" (even if not explicitly mentioned)
-3. PRESERVE ALL ADDRESS COMPONENTS (never delete city names or other location details)
-4. Structure components with EXACTLY these line breaks:
-   - Name (with "Professor" prefix)
-   - Department (if exists)
-   - Laboratory/Institute (if exists)
-   - University/Organization
-   - Full street address WITH city (e.g., "710049, AXZC Road, Xi'an")
-   - Country (ONLY on its own line, remove duplicates)
-   - Email (must be valid and present)
-
-ADDRESS HANDLING SPECIFICS:
-- Preserve the complete address, including street numbers, postal codes, and city names.
-- If the country name appears within the street address line, remove it from there. Instead, place the country name on a separate line, just before the email line.
-- Never delete city names or any other location identifiers.
-- Format the postal code and city in this structure: "[Postal Code], [Street Address], [City]" Example: "710049, AXZC Road, Xi'an"
-- Ensure consistency across all addresses while following these formatting rules.
-
-EMAIL VALIDATION:
-- Entry MUST have an email to be included
-- Standardize email format: lowercase, no spaces
-- Convert (at) to @ and (dot) to .
-- Remove any non-email text from the email line
-
-Example of correct formatting:
-Professor Adil Murtaza
-School of Physics
-MOE Key Laboratory for Nonequilibrium Synthesis
-State Key Laboratory for Materials Behavior
-Xi'an Jiaotong University
-710049, AXZC Road, Xi'an
-China
-adilmurtaza91@mail.xjtu.edu.cn
-
-Text to format:
+Text to refine:
 {chunk}
 """
         
@@ -582,7 +693,11 @@ def download_entries(journal, filename):
         return None
         
     doc = db.collection("journals").document(journal).collection("files").document(filename).get()
-    return "\n\n".join(doc.to_dict().get("entries", [])) if doc.exists else None
+    if doc.exists:
+        entries = doc.to_dict().get("entries", [])
+        entry_count = doc.to_dict().get("entry_count", len(entries))
+        return "\n\n".join(entries), entry_count
+    return None, 0
 
 def delete_file(journal, filename):
     db = get_firestore_db()
@@ -685,7 +800,7 @@ def search_entries(query):
 # UI COMPONENTS
 # ======================
 def show_connection_status():
-    with st.sidebar.expander("📶 Connection Status", expanded=st.session_state.show_connection_status):
+    with st.sidebar.expander("📶 Connection Status", expanded=False):  # Changed to collapsed by default
         if st.session_state.cloud_status == "Connected":
             st.success("✅ Cloud: Connected")
         elif st.session_state.cloud_status == "Error":
@@ -829,66 +944,45 @@ def apply_theme_settings():
     
     current_font_size = font_sizes.get(st.session_state.font_size, "16px")
     
-    if st.session_state.theme == "Dark":
-        st.markdown(f"""
-        <style>
-            .stApp {{
-                background-color: #1a1a1a;
-                color: white;
-                font-size: {current_font_size};
-            }}
-            .css-1d391kg, .css-1y4p8pa {{
-                background-color: #2d2d2d;
-            }}
-            .stTextInput>div>div>input, .stTextArea>div>div>textarea {{
-                background-color: #3d3d3d;
-                color: white;
-                font-size: {current_font_size};
-            }}
-            .st-bb, .st-at, .st-ae, .st-af, .st-ag, .st-ah, .st-ai, .st-aj, .st-ak, .st-al {{
-                font-size: {current_font_size};
-                color: white;
-            }}
-            .sidebar .sidebar-content {{
-                font-size: {current_font_size};
-                background-color: #2d2d2d;
-                color: white;
-            }}
-        </style>
-        """, unsafe_allow_html=True)
-    elif st.session_state.theme == "Light":
-        st.markdown(f"""
-        <style>
-            .stApp {{
-                background-color: #ffffff;
-                color: #333333;
-                font-size: {current_font_size};
-            }}
-            .css-1d391kg, .css-1y4p8pa {{
-                background-color: #f5f5f5;
-            }}
-            .stTextInput>div>div>input, .stTextArea>div>div>textarea {{
-                background-color: #ffffff;
-                color: #333333;
-                font-size: {current_font_size};
-                border: 1px solid #ddd;
-            }}
-            .st-bb, .st-at, .st-ae, .st-af, .st-ag, .st-ah, .st-ai, .st-aj, .st-ak, .st-al {{
-                font-size: {current_font_size};
-                color: #333333;
-            }}
-            .sidebar .sidebar-content {{
-                font-size: {current_font_size};
-                background-color: #f5f5f5;
-                color: #333333;
-            }}
-        </style>
-        """, unsafe_allow_html=True)
-    
+    # Set background to white and ensure text is visible
     st.markdown(f"""
     <style>
         .stApp {{
-            background-color: {st.session_state.bg_color};
+            background-color: #ffffff;
+            color: #333333;
+            font-size: {current_font_size};
+        }}
+        .css-1d391kg, .css-1y4p8pa {{
+            background-color: #f5f5f5;
+        }}
+        .stTextInput>div>div>input, .stTextArea>div>div>textarea {{
+            background-color: #ffffff;
+            color: #333333;
+            font-size: {current_font_size};
+            border: 1px solid #ddd;
+        }}
+        .st-bb, .st-at, .st-ae, .st-af, .st-ag, .st-ah, .st-ai, .st-aj, .st-ak, .st-al {{
+            font-size: {current_font_size};
+            color: #333333;
+        }}
+        .sidebar .sidebar-content {{
+            font-size: {current_font_size};
+            background-color: #f5f5f5;
+            color: #333333;
+        }}
+        .stButton>button {{
+            color: #ffffff;
+            background-color: #3498db;
+        }}
+        .stButton>button:hover {{
+            background-color: #2980b9;
+        }}
+        .stAlert {{
+            color: #333333;
+        }}
+        .st-expander {{
+            background-color: #ffffff;
+            border: 1px solid #ddd;
         }}
     </style>
     """, unsafe_allow_html=True)
@@ -964,87 +1058,99 @@ def show_entry_module():
     # Operation selector in main content area with unique key
     st.session_state.app_mode = st.radio(
         "Select Operation",
-        ["🔍 Search Database", "📤 Upload Entries", "✏️ Create Entries", "🗂 Manage Journals"],
+        ["✏️ Create Entries", "📤 Upload Entries", "🔍 Search Database", "🗂 Manage Journals"],  # Changed order
         key="operation_selector",
         horizontal=True
     )
 
-    if st.session_state.app_mode == "🔍 Search Database":
-        st.header("🔍 Search Database")
-        search_col1, search_col2 = st.columns([3, 1])
-        with search_col1:
-            search_query = st.text_input("Search for entries or filenames:", 
-                                       value=st.session_state.search_query,
-                                       key="search_input")
-        with search_col2:
-            if st.button("Search", key="search_button"):
-                if get_firestore_db():
-                    st.session_state.search_query = search_query
-                    st.session_state.search_results = search_entries(search_query)
-                    st.session_state.show_search_results = True
-
-        if st.session_state.show_search_results and st.session_state.search_results:
-            st.subheader(f"Search Results ({len(st.session_state.search_results)} matches)")
-            
-            sort_col1, sort_col2 = st.columns(2)
-            with sort_col1:
-                sort_by = st.selectbox("Sort by", ["Relevance", "Journal", "Filename"], key="sort_by")
-            with sort_col2:
-                sort_order = st.selectbox("Order", ["Descending", "Ascending"], key="sort_order")
-            
-            if sort_by == "Journal":
-                st.session_state.search_results.sort(key=lambda x: x["journal"], reverse=(sort_order == "Descending"))
-            elif sort_by == "Filename":
-                st.session_state.search_results.sort(key=lambda x: x["filename"], reverse=(sort_order == "Descending"))
-            
-            for i, result in enumerate(st.session_state.search_results[:50]):
-                with st.container():
-                    st.markdown(f"**Journal:** {result['journal']}  \n**File:** {result['filename']}")
+    if st.session_state.app_mode == "✏️ Create Entries":
+        st.header("✏️ Create Entries")
+        
+        raw_text = st.text_area("Paste author entries here (one entry per paragraph):", 
+                              height=300, 
+                              key="raw_entries_input")
+        
+        if st.button("Format Entries", key="format_entries_btn"):
+            if raw_text.strip():
+                if st.session_state.ai_status != "Connected":
+                    st.error("AI service is not available. Please check your API key in the sidebar.")
+                else:
+                    progress_bar = st.progress(0, key="format_progress")
+                    status_text = st.empty()
                     
-                    if result.get("is_file", False):
-                        st.text(f"File: {result['filename']}")
-                        if st.button("📥 Download", key=f"dl_{result['journal']}_{result['filename']}_{i}"):
-                            content = download_entries(result["journal"], result["filename"])
-                            if content:
-                                st.download_button(
-                                    label="Download Now",
-                                    data=content,
-                                    file_name=f"{result['filename']}.txt",
-                                    mime="text/plain",
-                                    key=f"download_{result['filename']}_{i}"
-                                )
+                    formatted = format_entries_chunked(raw_text, progress_bar, status_text)
+                    if formatted:
+                        entries = formatted.split("\n\n")
+                        st.session_state.entries = entries
+                        st.success(f"Formatted {len(entries)} entries!")
+                        st.session_state.show_save_section = True
+                        st.session_state.show_formatted_entries = False  # Hide by default
                     else:
-                        if st.session_state.current_edit_entry == result['entry']:
-                            edited_entry = st.text_area("Edit entry:", 
-                                                       value=result["entry"], 
-                                                       height=150, 
-                                                       key=f"edit_{result['journal']}_{result['filename']}_{hash(result['entry'])}")
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if st.button("Save", key=f"save_{result['journal']}_{result['filename']}_{hash(result['entry'])}"):
-                                    if update_entry(result["journal"], result["filename"], result["entry"], edited_entry):
-                                        st.success("Entry updated successfully!")
-                                        st.session_state.current_edit_entry = None
-                                        st.session_state.search_results = search_entries(st.session_state.search_query)
-                            with col2:
-                                if st.button("Cancel", key=f"cancel_{result['journal']}_{result['filename']}_{hash(result['entry'])}"):
-                                    st.session_state.current_edit_entry = None
-                        else:
-                            st.text_area("Entry:", 
-                                        value=result["entry"], 
-                                        height=150, 
-                                        key=f"view_{result['journal']}_{result['filename']}_{hash(result['entry'])}", 
-                                        disabled=True)
+                        st.error("Formatting failed. Check your input.")
+            else:
+                st.warning("Please paste some content first")
+
+        if st.session_state.get('show_save_section', False) and st.session_state.entries:
+            st.subheader("Formatted Entries")
+            st.info(f"Total formatted entries: {len(st.session_state.entries)}")
+            
+            # Toggle to show formatted entries
+            if st.button("👁️ Show Formatted Entries", key="toggle_formatted_entries"):
+                st.session_state.show_formatted_entries = not st.session_state.show_formatted_entries
+            
+            if st.session_state.show_formatted_entries:
+                st.write("Showing first 30 entries:")
+                for i, entry in enumerate(st.session_state.entries[:30]):
+                    st.text_area("", 
+                               value=entry, 
+                               height=150, 
+                               disabled=True,
+                               key=f"entry_{i}")
+                
+                if len(st.session_state.entries) > 30:
+                    if st.button("Show All Entries", key="show_all_btn"):
+                        st.session_state.show_all_entries = True
+                        st.rerun()
                     
-                    col1, col2 = st.columns([1, 1])
-                    with col1:
-                        if not result.get("is_file", False) and st.button("✏️ Edit", key=f"edit_btn_{result['journal']}_{result['filename']}_{hash(result['entry'])}"):
-                            st.session_state.current_edit_entry = result['entry']
-                    with col2:
-                        if not result.get("is_file", False) and st.button("🗑️ Delete", key=f"delete_{result['journal']}_{result['filename']}_{hash(result['entry'])}"):
-                            st.session_state.deleting_entry = result
-                    st.markdown("---")
+                    if st.button("Download All Entries", key="download_all_btn"):
+                        entries_text = "\n\n".join(st.session_state.entries)
+                        st.download_button(
+                            label="Download All Entries",
+                            data=entries_text,
+                            file_name="formatted_entries.txt",
+                            mime="text/plain",
+                            key="download_all_entries_btn"
+                        )
+            
+            entries_text = "\n\n".join(st.session_state.entries)
+            st.download_button(
+                label="Download All Entries",
+                data=entries_text,
+                file_name="formatted_entries.txt",
+                mime="text/plain",
+                key="download_full_entries_btn"
+            )
+            
+            selected_journal = st.selectbox("Select Journal:", 
+                                          st.session_state.available_journals,
+                                          key="save_journal_select")
+            filename = st.text_input("Filename:", 
+                                   get_suggested_filename(selected_journal),
+                                   key="save_filename_input")
+            
+            if st.button("Save to Database", key="final_save_btn"):
+                progress_bar = st.progress(0, key="final_save_progress")
+                status_text = st.empty()
+                
+                if save_entries_with_progress(
+                    st.session_state.entries,
+                    selected_journal,
+                    filename,
+                    progress_bar,
+                    status_text
+                ):
+                    st.success("Entries saved successfully!")
+                    st.session_state.show_save_section = False
 
     elif st.session_state.app_mode == "📤 Upload Entries":
         st.header("📤 Upload Entries")
@@ -1130,98 +1236,82 @@ def show_entry_module():
                     st.success("Unique entries saved successfully!")
                     st.session_state.show_save_section = False
 
-    elif st.session_state.app_mode == "✏️ Create Entries":
-        st.header("✏️ Create Entries")
-        
-        raw_text = st.text_area("Paste author entries here (one entry per paragraph):", 
-                              height=300, 
-                              key="raw_entries_input")
-        
-        if st.button("Format Entries", key="format_entries_btn"):
-            if raw_text.strip():
-                if st.session_state.ai_status != "Connected":
-                    st.error("AI service is not available. Please check your API key in the sidebar.")
-                else:
-                    progress_bar = st.progress(0, key="format_progress")
-                    status_text = st.empty()
-                    
-                    formatted = format_entries_chunked(raw_text, progress_bar, status_text)
-                    if formatted:
-                        entries = formatted.split("\n\n")
-                        st.session_state.entries = entries
-                        st.success(f"Formatted {len(entries)} entries!")
-                        st.session_state.show_save_section = True
-                        st.session_state.show_all_entries = False
-                    else:
-                        st.error("Formatting failed. Check your input.")
-            else:
-                st.warning("Please paste some content first")
+    elif st.session_state.app_mode == "🔍 Search Database":
+        st.header("🔍 Search Database")
+        search_col1, search_col2 = st.columns([3, 1])
+        with search_col1:
+            search_query = st.text_input("Search for entries or filenames:", 
+                                       value=st.session_state.search_query,
+                                       key="search_input")
+        with search_col2:
+            if st.button("Search", key="search_button"):
+                if get_firestore_db():
+                    st.session_state.search_query = search_query
+                    st.session_state.search_results = search_entries(search_query)
+                    st.session_state.show_search_results = True
 
-        if st.session_state.get('show_save_section', False) and st.session_state.entries:
-            st.subheader("Formatted Entries")
-            st.info(f"Total formatted entries: {len(st.session_state.entries)}")
+        if st.session_state.show_search_results and st.session_state.search_results:
+            st.subheader(f"Search Results ({len(st.session_state.search_results)} matches)")
             
-            if not st.session_state.show_all_entries:
-                st.write("Showing first 30 entries:")
-                for i, entry in enumerate(st.session_state.entries[:30]):
-                    st.text_area("", 
-                               value=entry, 
-                               height=150, 
-                               disabled=True,
-                               key=f"entry_{i}")
-                
-                if len(st.session_state.entries) > 30:
-                    if st.button("Show All Entries", key="show_all_btn"):
-                        st.session_state.show_all_entries = True
-                        st.rerun()
+            sort_col1, sort_col2 = st.columns(2)
+            with sort_col1:
+                sort_by = st.selectbox("Sort by", ["Relevance", "Journal", "Filename"], key="sort_by")
+            with sort_col2:
+                sort_order = st.selectbox("Order", ["Descending", "Ascending"], key="sort_order")
+            
+            if sort_by == "Journal":
+                st.session_state.search_results.sort(key=lambda x: x["journal"], reverse=(sort_order == "Descending"))
+            elif sort_by == "Filename":
+                st.session_state.search_results.sort(key=lambda x: x["filename"], reverse=(sort_order == "Descending"))
+            
+            for i, result in enumerate(st.session_state.search_results[:50]):
+                with st.container():
+                    st.markdown(f"**Journal:** {result['journal']}  \n**File:** {result['filename']}")
                     
-                    if st.button("Download All Entries", key="download_all_btn"):
-                        entries_text = "\n\n".join(st.session_state.entries)
-                        st.download_button(
-                            label="Download All Entries",
-                            data=entries_text,
-                            file_name="formatted_entries.txt",
-                            mime="text/plain",
-                            key="download_all_entries_btn"
-                        )
-            else:
-                st.write("Showing all entries:")
-                for i, entry in enumerate(st.session_state.entries):
-                    st.text_area("", 
-                               value=entry, 
-                               height=150, 
-                               disabled=True,
-                               key=f"full_entry_{i}")
-                
-                entries_text = "\n\n".join(st.session_state.entries)
-                st.download_button(
-                    label="Download All Entries",
-                    data=entries_text,
-                    file_name="formatted_entries.txt",
-                    mime="text/plain",
-                    key="download_full_entries_btn"
-                )
-            
-            selected_journal = st.selectbox("Select Journal:", 
-                                          st.session_state.available_journals,
-                                          key="save_journal_select")
-            filename = st.text_input("Filename:", 
-                                   get_suggested_filename(selected_journal),
-                                   key="save_filename_input")
-            
-            if st.button("Save to Database", key="final_save_btn"):
-                progress_bar = st.progress(0, key="final_save_progress")
-                status_text = st.empty()
-                
-                if save_entries_with_progress(
-                    st.session_state.entries,
-                    selected_journal,
-                    filename,
-                    progress_bar,
-                    status_text
-                ):
-                    st.success("Entries saved successfully!")
-                    st.session_state.show_save_section = False
+                    if result.get("is_file", False):
+                        st.text(f"File: {result['filename']}")
+                        if st.button("📥 Download", key=f"dl_{result['journal']}_{result['filename']}_{i}"):
+                            content, entry_count = download_entries(result["journal"], result["filename"])
+                            if content:
+                                st.download_button(
+                                    label="Download Now",
+                                    data=content,
+                                    file_name=f"{result['filename']} ({entry_count} entries).txt",
+                                    mime="text/plain",
+                                    key=f"download_{result['filename']}_{i}"
+                                )
+                    else:
+                        if st.session_state.current_edit_entry == result['entry']:
+                            edited_entry = st.text_area("Edit entry:", 
+                                                       value=result["entry"], 
+                                                       height=150, 
+                                                       key=f"edit_{result['journal']}_{result['filename']}_{hash(result['entry'])}")
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button("Save", key=f"save_{result['journal']}_{result['filename']}_{hash(result['entry'])}"):
+                                    if update_entry(result["journal"], result["filename"], result["entry"], edited_entry):
+                                        st.success("Entry updated successfully!")
+                                        st.session_state.current_edit_entry = None
+                                        st.session_state.search_results = search_entries(st.session_state.search_query)
+                            with col2:
+                                if st.button("Cancel", key=f"cancel_{result['journal']}_{result['filename']}_{hash(result['entry'])}"):
+                                    st.session_state.current_edit_entry = None
+                        else:
+                            st.text_area("Entry:", 
+                                        value=result["entry"], 
+                                        height=150, 
+                                        key=f"view_{result['journal']}_{result['filename']}_{hash(result['entry'])}", 
+                                        disabled=True)
+                    
+                    col1, col2 = st.columns([1, 1])
+                    with col1:
+                        if not result.get("is_file", False) and st.button("✏️ Edit", key=f"edit_btn_{result['journal']}_{result['filename']}_{hash(result['entry'])}"):
+                            st.session_state.current_edit_entry = result['entry']
+                    with col2:
+                        if not result.get("is_file", False) and st.button("🗑️ Delete", key=f"delete_{result['journal']}_{result['filename']}_{hash(result['entry'])}"):
+                            st.session_state.deleting_entry = result
+                    st.markdown("---")
 
     elif st.session_state.app_mode == "🗂 Manage Journals":
         st.header("🗂 Manage Journals")
@@ -1254,12 +1344,12 @@ def show_entry_module():
                                 
                                 with col2:
                                     if st.button("📥 Download", key=f"dl_{file['name']}_{i}"):
-                                        content = download_entries(selected_journal, file['name'])
+                                        content, entry_count = download_entries(selected_journal, file['name'])
                                         if content:
                                             st.download_button(
                                                 label="Download Now",
                                                 data=content,
-                                                file_name=f"{file['name']}.txt",
+                                                file_name=f"{file['name']} ({entry_count} entries).txt",
                                                 mime="text/plain",
                                                 key=f"dl_btn_{file['name']}_{i}"
                                             )
