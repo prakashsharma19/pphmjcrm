@@ -43,8 +43,8 @@ def init_session_state():
         'authenticated': False,
         'username': "",
         'font_size': 'Medium',
-        'bg_color': '#1a1a1a',
-        'theme': 'Dark',
+        'bg_color': '#ffffff',
+        'theme': 'Light',
         'current_module': None,
         'cloud_status': 'Not checked',
         'ai_status': 'Not checked',
@@ -53,7 +53,9 @@ def init_session_state():
         'show_all_entries': False,
         'manual_api_key': 'AIzaSyBIXgqTphaQq8u3W5A4HRHVhwBp_fbnfsg',
         'show_api_key_input': False,
-        'delete_duplicates_mode': False
+        'delete_duplicates_mode': False,
+        'show_connection_status': False,
+        'app_mode': "🔍 Search Database"
     }
     
     for key, default_value in session_vars.items():
@@ -70,12 +72,10 @@ init_session_state()
 def initialize_firebase():
     """Initialize Firebase with proper error handling and singleton pattern"""
     try:
-        # Check if already initialized
         if firebase_admin._apps:
             st.session_state.cloud_status = "Connected"
             return True
             
-        # Load Firebase config from Streamlit secrets
         firebase_config = {
             "type": st.secrets["firebase"]["type"],
             "project_id": st.secrets["firebase"]["project_id"],
@@ -102,7 +102,6 @@ def initialize_firebase():
         return False
 
 def get_firestore_db():
-    """Get Firestore client with initialization check"""
     if not initialize_firebase():
         st.error(f"Firebase initialization failed: {st.session_state.cloud_error}")
         return None
@@ -158,12 +157,10 @@ def process_uploaded_file(uploaded_file):
         return []
 
 def extract_author_email(entry):
-    """Extract author name and email from entry for duplicate detection"""
     lines = entry.split('\n')
     if len(lines) < 2:
         return None, None
     
-    # First line is name (remove "Professor" prefix if present)
     name = lines[0].replace("Professor", "").strip()
     email = lines[-1].strip()
     
@@ -180,7 +177,6 @@ def test_service_connections():
     # Test AI
     for attempt in range(max_retries):
         try:
-            # Check if manual API key is provided
             api_key = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
             if not api_key:
                 st.session_state.ai_status = "Error"
@@ -224,7 +220,6 @@ def check_services_status():
     test_service_connections()
 
 def initialize_services():
-    # Get API key from environment variables or manual input
     API_KEY = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
     
     if not API_KEY:
@@ -233,7 +228,6 @@ def initialize_services():
         st.session_state.show_api_key_input = True
         return False
 
-    # AI Initialization
     try:
         genai.configure(api_key=API_KEY)
         st.session_state.ai_status = "Connected"
@@ -243,7 +237,6 @@ def initialize_services():
         st.session_state.show_api_key_input = True
         return False
 
-    # Firebase Initialization
     return initialize_firebase()
 
 # Check services status on startup
@@ -293,17 +286,14 @@ def get_available_journals():
 st.session_state.available_journals = get_available_journals()
 
 def check_duplicates(new_entries):
-    """Check for duplicates across all journals and return only unique entries"""
     unique_entries = []
     duplicate_info = {}
     db = get_firestore_db()
     if not db:
         return unique_entries, duplicate_info
         
-    # Create a dictionary to track the latest version of each author
     author_entries = {}
     
-    # First check existing entries in database
     for journal in db.collection("journals").stream():
         for file in db.collection("journals").document(journal.id).collection("files").stream():
             existing_entries = file.to_dict().get("entries", [])
@@ -318,16 +308,14 @@ def check_duplicates(new_entries):
                         "timestamp": file.to_dict().get("last_updated", datetime.now())
                     }
     
-    # Now check new entries against existing ones
     for new_entry in new_entries:
         name, email = extract_author_email(new_entry)
         if not name or not email:
-            continue  # Skip invalid entries
+            continue
             
         key = f"{name.lower()}_{email.lower()}"
         
         if key in author_entries:
-            # This is a duplicate
             if key not in duplicate_info:
                 duplicate_info[key] = []
             duplicate_info[key].append({
@@ -336,11 +324,8 @@ def check_duplicates(new_entries):
                 "filename": "NEW_UPLOAD",
                 "timestamp": datetime.now()
             })
-            # Keep the existing entry (don't add to unique_entries)
         else:
-            # This is a new unique entry
             unique_entries.append(new_entry)
-            # Add to author_entries to check against subsequent new entries
             author_entries[key] = {
                 "entry": new_entry,
                 "journal": "NEW_UPLOAD",
@@ -351,13 +336,11 @@ def check_duplicates(new_entries):
     return unique_entries, duplicate_info
 
 def delete_all_duplicates():
-    """Delete all duplicate entries across the system, keeping only the latest version of each"""
     db = get_firestore_db()
     if not db:
         return False, "Database connection failed"
     
     try:
-        # First collect all entries across all journals
         all_entries = {}
         journals_to_update = {}
         
@@ -390,16 +373,13 @@ def delete_all_duplicates():
                             "timestamp": last_updated
                         })
         
-        # Now identify duplicates and keep only the latest version
         entries_to_keep = {}
         duplicates_found = 0
         
         for key, entries in all_entries.items():
             if len(entries) > 1:
                 duplicates_found += len(entries) - 1
-                # Sort by timestamp (newest first)
                 sorted_entries = sorted(entries, key=lambda x: x["timestamp"], reverse=True)
-                # Keep only the first (newest) entry
                 entries_to_keep[key] = sorted_entries[0]
             else:
                 entries_to_keep[key] = entries[0]
@@ -407,7 +387,6 @@ def delete_all_duplicates():
         if duplicates_found == 0:
             return True, "No duplicates found"
         
-        # Now update all journals/files to remove duplicates
         for journal_name, files in journals_to_update.items():
             for file_name, file_data in files.items():
                 original_entries = file_data["entries"]
@@ -417,11 +396,9 @@ def delete_all_duplicates():
                     name, email = extract_author_email(entry)
                     if name and email:
                         key = f"{name.lower()}_{email.lower()}"
-                        # Only keep if this is the version we're keeping
                         if key in entries_to_keep and entries_to_keep[key]["entry"] == entry:
                             updated_entries.append(entry)
                 
-                # Update the file if entries changed
                 if len(updated_entries) != len(original_entries):
                     doc_ref = db.collection("journals").document(journal_name).collection("files").document(file_name)
                     doc_ref.update({
@@ -518,11 +495,10 @@ Text to format:
             st.error(f"Error during formatting: {str(e)}")
             pass
     
-    # Additional validation pass to ensure no entries without emails are included
     final_entries = []
     for entry in "\n\n".join(formatted_parts).split("\n\n"):
         lines = entry.split('\n')
-        if len(lines) >= 2 and '@' in lines[-1]:  # Last line must contain email
+        if len(lines) >= 2 and '@' in lines[-1]:
             final_entries.append(entry)
     
     processing_time = time.time() - start_time
@@ -543,12 +519,11 @@ def save_entries_with_progress(entries, journal, filename, progress_bar, status_
         if not journal_ref.get().exists:
             journal_ref.set({"created": datetime.now()})
 
-        # Check for duplicates and get only unique entries
         unique_entries, duplicates = check_duplicates(entries)
         
         if duplicates:
             st.warning(f"Found {len(duplicates)} duplicate entries that will not be saved")
-            with st.expander("🔍 Duplicate Details"):
+            with st.expander("🔍 Duplicate Details", key=f"duplicates_{filename}"):
                 for key, dup_list in duplicates.items():
                     name, email = extract_author_email(dup_list[0]["entry"])
                     st.write(f"**Author:** {name} ({email})")
@@ -710,11 +685,7 @@ def search_entries(query):
 # UI COMPONENTS
 # ======================
 def show_connection_status():
-    """Show the connection status of Cloud and AI services"""
-    with st.sidebar:
-        st.markdown("### 🔌 Connection Status")
-        
-        # Cloud status
+    with st.sidebar.expander("📶 Connection Status", expanded=st.session_state.show_connection_status):
         if st.session_state.cloud_status == "Connected":
             st.success("✅ Cloud: Connected")
         elif st.session_state.cloud_status == "Error":
@@ -722,11 +693,11 @@ def show_connection_status():
             st.text_area("Cloud Error Details", 
                         value=st.session_state.cloud_error,
                         height=100,
-                        disabled=True)
+                        disabled=True,
+                        key="cloud_error_details")
         else:
             st.warning("🔄 Cloud: Checking...")
         
-        # AI status
         if st.session_state.ai_status == "Connected":
             st.success("✅ AI: Connected")
         elif st.session_state.ai_status == "Error":
@@ -734,19 +705,20 @@ def show_connection_status():
             st.text_area("AI Error Details",
                         value=st.session_state.ai_error,
                         height=100,
-                        disabled=True)
+                        disabled=True,
+                        key="ai_error_details")
         else:
             st.warning("🔄 AI: Checking...")
         
-        # Manual API key input
         if st.session_state.show_api_key_input or st.session_state.ai_status == "Error":
-            with st.expander("🔑 Enter Gemini API Key"):
+            with st.expander("🔑 Enter Gemini API Key", key="api_key_expander"):
                 st.session_state.manual_api_key = st.text_input(
                     "Gemini API Key:",
                     value=st.session_state.manual_api_key,
-                    type="password"
+                    type="password",
+                    key="api_key_input"
                 )
-                if st.button("Save API Key"):
+                if st.button("Save API Key", key="save_api_key"):
                     if st.session_state.manual_api_key:
                         try:
                             genai.configure(api_key=st.session_state.manual_api_key)
@@ -757,14 +729,13 @@ def show_connection_status():
                     else:
                         st.error("Please enter an API key")
         
-        # Action buttons
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("🔄 Refresh"):
+            if st.button("🔄 Refresh", key="refresh_connections"):
                 check_services_status()
                 st.rerun()
         with col2:
-            if st.button("🧪 Test Connections"):
+            if st.button("🧪 Test Connections", key="test_connections"):
                 with st.spinner("Testing connections..."):
                     test_service_connections()
                     st.rerun()
@@ -783,7 +754,7 @@ def show_login_page():
             padding: 30px;
             border-radius: 10px;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            background-color: #2d2d2d;
+            background-color: #f5f5f5;
         }
         .header {
             display: flex;
@@ -795,13 +766,13 @@ def show_login_page():
         .app-title {
             font-size: 28px;
             font-weight: bold;
-            color: white;
+            color: #333;
             margin-top: 15px;
         }
         .stTextInput>div>div>input {
             padding: 10px;
-            background-color: #3d3d3d;
-            color: white;
+            background-color: #fff;
+            color: #333;
         }
         .stButton>button {
             width: 100%;
@@ -828,45 +799,26 @@ def show_login_page():
             st.markdown('</div>', unsafe_allow_html=True)
         with col2:
             st.markdown("### Login")
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
+            username = st.text_input("Username", key="login_username")
+            password = st.text_input("Password", type="password", key="login_password")
             
-            if st.button("Login"):
-                if username == "admin" and password == "admin123!@#":
+            if st.button("Login", key="login_button"):
+                valid_users = {
+                    "prakash": "prakash123@",
+                    "mangal": "mangal123@",
+                    "manish": "manish123@",
+                    "rajeev": "rajeev123@",
+                    "ashish": "ashish123@",
+                    "arun": "arunazad123@",
+                    "admin": "admin123"
+                }
+                
+                if username.lower() in valid_users and password == valid_users[username.lower()]:
                     st.session_state.authenticated = True
                     st.session_state.username = username
                     st.rerun()
                 else:
                     st.error("Invalid username or password")
-
-def show_settings():
-    st.header("⚙️ Settings")
-    
-    with st.form("settings_form"):
-        st.subheader("Appearance")
-        new_font_size = st.selectbox(
-            "Font Size",
-            ["Small", "Medium", "Large"],
-            index=["Small", "Medium", "Large"].index(st.session_state.font_size)
-        )
-        
-        new_theme = st.selectbox(
-            "Theme",
-            ["Dark", "Light", "System"],
-            index=["Dark", "Light", "System"].index(st.session_state.theme)
-        )
-        
-        new_bg_color = st.color_picker(
-            "Background Color",
-            st.session_state.bg_color
-        )
-        
-        if st.form_submit_button("Save Settings"):
-            st.session_state.font_size = new_font_size
-            st.session_state.theme = new_theme
-            st.session_state.bg_color = new_bg_color
-            st.success("Settings saved successfully!")
-            apply_theme_settings()
 
 def apply_theme_settings():
     font_sizes = {
@@ -877,7 +829,6 @@ def apply_theme_settings():
     
     current_font_size = font_sizes.get(st.session_state.font_size, "16px")
     
-    # Apply theme
     if st.session_state.theme == "Dark":
         st.markdown(f"""
         <style>
@@ -896,9 +847,12 @@ def apply_theme_settings():
             }}
             .st-bb, .st-at, .st-ae, .st-af, .st-ag, .st-ah, .st-ai, .st-aj, .st-ak, .st-al {{
                 font-size: {current_font_size};
+                color: white;
             }}
             .sidebar .sidebar-content {{
                 font-size: {current_font_size};
+                background-color: #2d2d2d;
+                color: white;
             }}
         </style>
         """, unsafe_allow_html=True)
@@ -906,28 +860,31 @@ def apply_theme_settings():
         st.markdown(f"""
         <style>
             .stApp {{
-                background-color: white;
-                color: black;
+                background-color: #ffffff;
+                color: #333333;
                 font-size: {current_font_size};
+            }}
+            .css-1d391kg, .css-1y4p8pa {{
+                background-color: #f5f5f5;
+            }}
+            .stTextInput>div>div>input, .stTextArea>div>div>textarea {{
+                background-color: #ffffff;
+                color: #333333;
+                font-size: {current_font_size};
+                border: 1px solid #ddd;
+            }}
+            .st-bb, .st-at, .st-ae, .st-af, .st-ag, .st-ah, .st-ai, .st-aj, .st-ak, .st-al {{
+                font-size: {current_font_size};
+                color: #333333;
             }}
             .sidebar .sidebar-content {{
                 font-size: {current_font_size};
-            }}
-        </style>
-        """, unsafe_allow_html=True)
-    else:  # System
-        st.markdown(f"""
-        <style>
-            .stApp {{
-                font-size: {current_font_size};
-            }}
-            .sidebar .sidebar-content {{
-                font-size: {current_font_size};
+                background-color: #f5f5f5;
+                color: #333333;
             }}
         </style>
         """, unsafe_allow_html=True)
     
-    # Apply background color
     st.markdown(f"""
     <style>
         .stApp {{
@@ -947,7 +904,7 @@ def show_main_menu():
         }
         .menu-item {
             padding: 30px;
-            background-color: #2d2d2d;
+            background-color: #f5f5f5;
             border-radius: 10px;
             display: flex;
             justify-content: center;
@@ -959,7 +916,7 @@ def show_main_menu():
         }
         .menu-item:hover {
             transform: scale(1.02);
-            background-color: #3d3d3d;
+            background-color: #e5e5e5;
         }
         .menu-icon {
             font-size: 40px;
@@ -999,26 +956,28 @@ def show_entry_module():
         show_login_page()
         return
 
-    st.title("📚 PPH CRM - Entry")
+    st.title("📚 PPH CRM - Entry Module")
     
     if logo:
         st.image(logo, width=100)
 
-    # Sidebar navigation for entry module
-    app_mode = st.sidebar.radio("Select Operation", [
-        "🔍 Search Database",
-        "📤 Upload Entries",
-        "✏️ Create Entries",
-        "🗂 Manage Journals"
-    ])
+    # Operation selector in main content area with unique key
+    st.session_state.app_mode = st.radio(
+        "Select Operation",
+        ["🔍 Search Database", "📤 Upload Entries", "✏️ Create Entries", "🗂 Manage Journals"],
+        key="operation_selector",
+        horizontal=True
+    )
 
-    if app_mode == "🔍 Search Database":
+    if st.session_state.app_mode == "🔍 Search Database":
         st.header("🔍 Search Database")
         search_col1, search_col2 = st.columns([3, 1])
         with search_col1:
-            search_query = st.text_input("Search for entries or filenames:", value=st.session_state.search_query)
+            search_query = st.text_input("Search for entries or filenames:", 
+                                       value=st.session_state.search_query,
+                                       key="search_input")
         with search_col2:
-            if st.button("Search"):
+            if st.button("Search", key="search_button"):
                 if get_firestore_db():
                     st.session_state.search_query = search_query
                     st.session_state.search_results = search_entries(search_query)
@@ -1029,35 +988,37 @@ def show_entry_module():
             
             sort_col1, sort_col2 = st.columns(2)
             with sort_col1:
-                sort_by = st.selectbox("Sort by", ["Relevance", "Journal", "Filename"])
+                sort_by = st.selectbox("Sort by", ["Relevance", "Journal", "Filename"], key="sort_by")
             with sort_col2:
-                sort_order = st.selectbox("Order", ["Descending", "Ascending"])
+                sort_order = st.selectbox("Order", ["Descending", "Ascending"], key="sort_order")
             
             if sort_by == "Journal":
                 st.session_state.search_results.sort(key=lambda x: x["journal"], reverse=(sort_order == "Descending"))
             elif sort_by == "Filename":
                 st.session_state.search_results.sort(key=lambda x: x["filename"], reverse=(sort_order == "Descending"))
             
-            for result in st.session_state.search_results[:50]:
+            for i, result in enumerate(st.session_state.search_results[:50]):
                 with st.container():
                     st.markdown(f"**Journal:** {result['journal']}  \n**File:** {result['filename']}")
                     
                     if result.get("is_file", False):
                         st.text(f"File: {result['filename']}")
-                        # Add download button for files
-                        if st.button("📥 Download", key=f"dl_{result['journal']}_{result['filename']}"):
+                        if st.button("📥 Download", key=f"dl_{result['journal']}_{result['filename']}_{i}"):
                             content = download_entries(result["journal"], result["filename"])
                             if content:
                                 st.download_button(
                                     label="Download Now",
                                     data=content,
                                     file_name=f"{result['filename']}.txt",
-                                    mime="text/plain"
+                                    mime="text/plain",
+                                    key=f"download_{result['filename']}_{i}"
                                 )
                     else:
                         if st.session_state.current_edit_entry == result['entry']:
-                            edited_entry = st.text_area("Edit entry:", value=result["entry"], height=150, 
-                                                      key=f"edit_{result['journal']}_{result['filename']}_{hash(result['entry'])}")
+                            edited_entry = st.text_area("Edit entry:", 
+                                                       value=result["entry"], 
+                                                       height=150, 
+                                                       key=f"edit_{result['journal']}_{result['filename']}_{hash(result['entry'])}")
                             
                             col1, col2 = st.columns(2)
                             with col1:
@@ -1070,7 +1031,9 @@ def show_entry_module():
                                 if st.button("Cancel", key=f"cancel_{result['journal']}_{result['filename']}_{hash(result['entry'])}"):
                                     st.session_state.current_edit_entry = None
                         else:
-                            st.text_area("Entry:", value=result["entry"], height=150, 
+                            st.text_area("Entry:", 
+                                        value=result["entry"], 
+                                        height=150, 
                                         key=f"view_{result['journal']}_{result['filename']}_{hash(result['entry'])}", 
                                         disabled=True)
                     
@@ -1083,12 +1046,13 @@ def show_entry_module():
                             st.session_state.deleting_entry = result
                     st.markdown("---")
 
-    elif app_mode == "📤 Upload Entries":
+    elif st.session_state.app_mode == "📤 Upload Entries":
         st.header("📤 Upload Entries")
         
-        # Add the "Delete Duplicate Entries" button at the top
-        if st.button("✅ Delete Duplicate Entries", type="primary", 
-                   help="Remove all duplicate entries from the entire system, keeping only the latest version of each"):
+        if st.button("✅ Delete Duplicate Entries", 
+                    type="primary", 
+                    key="delete_duplicates_btn",
+                    help="Remove all duplicate entries from the entire system, keeping only the latest version of each"):
             st.session_state.delete_duplicates_mode = True
         
         if st.session_state.delete_duplicates_mode:
@@ -1100,17 +1064,21 @@ def show_entry_module():
                     st.error(message)
                 st.session_state.delete_duplicates_mode = False
         
-        uploaded_file = st.file_uploader("Upload TXT file with author entries", type=["txt"])
+        uploaded_file = st.file_uploader("Upload TXT file with author entries", 
+                                        type=["txt"], 
+                                        key="file_uploader")
         
         if uploaded_file:
             st.session_state.upload_journal = st.selectbox(
                 "Select Journal for Uploaded Entries:",
-                st.session_state.available_journals
+                st.session_state.available_journals,
+                key="upload_journal_select"
             )
             
             st.session_state.upload_filename = st.text_input(
                 "Filename for uploaded entries:",
-                get_suggested_filename(st.session_state.upload_journal)
+                get_suggested_filename(st.session_state.upload_journal),
+                key="upload_filename_input"
             )
             
             uploaded_entries = process_uploaded_file(uploaded_file)
@@ -1118,13 +1086,13 @@ def show_entry_module():
                 st.session_state.uploaded_entries = uploaded_entries
                 st.success(f"Found {len(uploaded_entries)} raw entries in file")
                 
-                if st.button("Process Uploaded Entries"):
+                if st.button("Process Uploaded Entries", key="process_upload_btn"):
                     with st.spinner("Checking for duplicates..."):
                         unique_entries, duplicates = check_duplicates(st.session_state.uploaded_entries)
                         
                         if duplicates:
                             st.warning(f"Found {len(duplicates)} duplicate entries that will not be saved")
-                            with st.expander("🔍 Duplicate Details"):
+                            with st.expander("🔍 Duplicate Details", key="duplicates_expander"):
                                 for key, dup_list in duplicates.items():
                                     name, email = extract_author_email(dup_list[0]["entry"])
                                     st.write(f"**Author:** {name} ({email})")
@@ -1138,18 +1106,18 @@ def show_entry_module():
             st.subheader("Processed Entries")
             st.info(f"Total unique entries ready to save: {len(st.session_state.entries)}")
             
-            # Download option
-            if st.button("Download Unique Entries"):
+            if st.button("Download Unique Entries", key="download_unique_btn"):
                 entries_text = "\n\n".join(st.session_state.entries)
                 st.download_button(
                     label="Download Now",
                     data=entries_text,
                     file_name=f"{st.session_state.upload_filename}_unique_entries.txt",
-                    mime="text/plain"
+                    mime="text/plain",
+                    key="download_unique_entries_btn"
                 )
             
-            if st.button("Save to Database"):
-                progress_bar = st.progress(0)
+            if st.button("Save to Database", key="save_to_db_btn"):
+                progress_bar = st.progress(0, key="save_progress")
                 status_text = st.empty()
                 
                 if save_entries_with_progress(
@@ -1162,17 +1130,19 @@ def show_entry_module():
                     st.success("Unique entries saved successfully!")
                     st.session_state.show_save_section = False
 
-    elif app_mode == "✏️ Create Entries":
+    elif st.session_state.app_mode == "✏️ Create Entries":
         st.header("✏️ Create Entries")
         
-        raw_text = st.text_area("Paste author entries here (one entry per paragraph):", height=300)
+        raw_text = st.text_area("Paste author entries here (one entry per paragraph):", 
+                              height=300, 
+                              key="raw_entries_input")
         
-        if st.button("Format Entries"):
+        if st.button("Format Entries", key="format_entries_btn"):
             if raw_text.strip():
                 if st.session_state.ai_status != "Connected":
                     st.error("AI service is not available. Please check your API key in the sidebar.")
                 else:
-                    progress_bar = st.progress(0)
+                    progress_bar = st.progress(0, key="format_progress")
                     status_text = st.empty()
                     
                     formatted = format_entries_chunked(raw_text, progress_bar, status_text)
@@ -1193,40 +1163,54 @@ def show_entry_module():
             
             if not st.session_state.show_all_entries:
                 st.write("Showing first 30 entries:")
-                for entry in st.session_state.entries[:30]:
-                    st.text_area("", value=entry, height=150, disabled=True)
+                for i, entry in enumerate(st.session_state.entries[:30]):
+                    st.text_area("", 
+                               value=entry, 
+                               height=150, 
+                               disabled=True,
+                               key=f"entry_{i}")
                 
                 if len(st.session_state.entries) > 30:
-                    if st.button("Show All Entries"):
+                    if st.button("Show All Entries", key="show_all_btn"):
                         st.session_state.show_all_entries = True
                         st.rerun()
                     
-                    if st.button("Download All Entries"):
+                    if st.button("Download All Entries", key="download_all_btn"):
                         entries_text = "\n\n".join(st.session_state.entries)
                         st.download_button(
                             label="Download All Entries",
                             data=entries_text,
                             file_name="formatted_entries.txt",
-                            mime="text/plain"
+                            mime="text/plain",
+                            key="download_all_entries_btn"
                         )
             else:
                 st.write("Showing all entries:")
-                for entry in st.session_state.entries:
-                    st.text_area("", value=entry, height=150, disabled=True)
+                for i, entry in enumerate(st.session_state.entries):
+                    st.text_area("", 
+                               value=entry, 
+                               height=150, 
+                               disabled=True,
+                               key=f"full_entry_{i}")
                 
                 entries_text = "\n\n".join(st.session_state.entries)
                 st.download_button(
                     label="Download All Entries",
                     data=entries_text,
                     file_name="formatted_entries.txt",
-                    mime="text/plain"
+                    mime="text/plain",
+                    key="download_full_entries_btn"
                 )
             
-            selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
-            filename = st.text_input("Filename:", get_suggested_filename(selected_journal))
+            selected_journal = st.selectbox("Select Journal:", 
+                                          st.session_state.available_journals,
+                                          key="save_journal_select")
+            filename = st.text_input("Filename:", 
+                                   get_suggested_filename(selected_journal),
+                                   key="save_filename_input")
             
-            if st.button("Save to Database"):
-                progress_bar = st.progress(0)
+            if st.button("Save to Database", key="final_save_btn"):
+                progress_bar = st.progress(0, key="final_save_progress")
                 status_text = st.empty()
                 
                 if save_entries_with_progress(
@@ -1239,25 +1223,27 @@ def show_entry_module():
                     st.success("Entries saved successfully!")
                     st.session_state.show_save_section = False
 
-    elif app_mode == "🗂 Manage Journals":
+    elif st.session_state.app_mode == "🗂 Manage Journals":
         st.header("🗂 Manage Journals")
         
-        tab1, tab2 = st.tabs(["View Journals", "Create New Journal/Folders"])
+        tab1, tab2 = st.tabs(["View Journals", "Create New Journal"], key="journal_tabs")
         
         with tab1:
             st.subheader("Available Journals")
             if not st.session_state.available_journals:
                 st.info("No journals available. Create a new journal first.")
             else:
-                selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
+                selected_journal = st.selectbox("Select Journal:", 
+                                               st.session_state.available_journals,
+                                               key="journal_select")
                 
                 if selected_journal:
                     files = get_journal_files(selected_journal)
                     if files:
                         st.subheader(f"Files in {selected_journal}")
                         
-                        for file in files:
-                            with st.expander(f"{file['name']} ({file['entry_count']} entries)"):
+                        for i, file in enumerate(files):
+                            with st.expander(f"{file['name']} ({file['entry_count']} entries)", key=f"file_expander_{i}"):
                                 col1, col2, col3 = st.columns([3, 1, 1])
                                 with col1:
                                     last_updated = file["last_updated"]
@@ -1267,18 +1253,19 @@ def show_entry_module():
                                         st.write("Last updated: Unknown")
                                 
                                 with col2:
-                                    if st.button("📥 Download", key=f"dl_{file['name']}"):
+                                    if st.button("📥 Download", key=f"dl_{file['name']}_{i}"):
                                         content = download_entries(selected_journal, file['name'])
                                         if content:
                                             st.download_button(
                                                 label="Download Now",
                                                 data=content,
                                                 file_name=f"{file['name']}.txt",
-                                                mime="text/plain"
+                                                mime="text/plain",
+                                                key=f"dl_btn_{file['name']}_{i}"
                                             )
                                 
                                 with col3:
-                                    if st.button("🗑️ Delete", key=f"del_{file['name']}"):
+                                    if st.button("🗑️ Delete", key=f"del_{file['name']}_{i}"):
                                         st.session_state.deleting_file = {
                                             "journal": selected_journal,
                                             "filename": file['name']
@@ -1289,8 +1276,8 @@ def show_entry_module():
         with tab2:
             st.subheader("Create New Journal")
             with st.form(key="new_journal_form"):
-                journal_name = st.text_input("Journal Name:")
-                if st.form_submit_button("Create Journal"):
+                journal_name = st.text_input("Journal Name:", key="new_journal_name")
+                if st.form_submit_button("Create Journal", key="create_journal_btn"):
                     if journal_name.strip():
                         if create_journal(journal_name):
                             st.success(f"Journal '{journal_name}' created successfully!")
@@ -1305,7 +1292,7 @@ def show_entry_module():
         st.warning(f"Are you sure you want to delete this entry from {result['full_path']}?")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Confirm Delete"):
+            if st.button("Confirm Delete", key="confirm_delete_entry"):
                 if delete_entry(result["journal"], result["filename"], result["entry"]):
                     st.success("Entry deleted successfully!")
                     st.session_state.deleting_entry = None
@@ -1313,7 +1300,7 @@ def show_entry_module():
                 else:
                     st.error("Failed to delete entry")
         with col2:
-            if st.button("Cancel"):
+            if st.button("Cancel", key="cancel_delete_entry"):
                 st.session_state.deleting_entry = None
 
     if st.session_state.deleting_file:
@@ -1321,14 +1308,14 @@ def show_entry_module():
         st.warning(f"Are you sure you want to delete '{file_info['filename']}' from {file_info['journal']}?")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Yes, Delete"):
+            if st.button("Yes, Delete", key="confirm_delete_file"):
                 if delete_file(file_info["journal"], file_info["filename"]):
                     st.success("File deleted successfully!")
                     st.session_state.deleting_file = None
                 else:
                     st.error("Failed to delete file")
         with col2:
-            if st.button("Cancel"):
+            if st.button("Cancel", key="cancel_delete_file"):
                 st.session_state.deleting_file = None
 
 # ======================
@@ -1337,34 +1324,60 @@ def show_entry_module():
 if not st.session_state.authenticated:
     show_login_page()
 else:
-    # Show connection status in sidebar
-    show_connection_status()
+    apply_theme_settings()
     
+    with st.sidebar:
+        show_connection_status()
+        
+        st.markdown("---")
+        
+        if st.button("🏠 Home", key="sidebar_home_btn"):
+            st.session_state.current_module = None
+            st.rerun()
+        
+        st.markdown("---")
+        
+        with st.expander("⚙️ Settings", key="sidebar_settings"):
+            with st.form("settings_form"):
+                st.subheader("Appearance")
+                new_font_size = st.selectbox(
+                    "Font Size",
+                    ["Small", "Medium", "Large"],
+                    index=["Small", "Medium", "Large"].index(st.session_state.font_size),
+                    key="sidebar_font_size"
+                )
+                
+                new_theme = st.selectbox(
+                    "Theme",
+                    ["Light", "Dark"],
+                    index=["Light", "Dark"].index(st.session_state.theme),
+                    key="sidebar_theme"
+                )
+                
+                if st.form_submit_button("Save Settings", key="save_settings_btn"):
+                    st.session_state.font_size = new_font_size
+                    st.session_state.theme = new_theme
+                    st.session_state.bg_color = "#ffffff" if new_theme == "Light" else "#1a1a1a"
+                    st.success("Settings saved successfully!")
+                    apply_theme_settings()
+                    st.rerun()
+        
+        st.markdown("---")
+        st.markdown(f"Logged in as: **{st.session_state.username}**")
+        
+        if st.button("🚪 Logout", key="sidebar_logout_btn"):
+            st.session_state.authenticated = False
+            st.session_state.username = ""
+            st.session_state.current_module = None
+            st.rerun()
+
     if st.session_state.current_module is None:
         show_main_menu()
-    else:
-        if st.session_state.current_module == "Entry":
-            show_entry_module()
-        elif st.session_state.current_module == "PPH Office Tools":
-            st.header("🛠️ PPH Office Tools")
-            st.info("Coming soon!")
+    elif st.session_state.current_module == "Entry":
+        show_entry_module()
+    elif st.session_state.current_module == "PPH Office Tools":
+        st.header("🛠️ PPH Office Tools")
+        st.info("Coming soon!")
 
-    # Sidebar with logout button
-    st.sidebar.markdown("---")
-    if st.sidebar.button("🚪 Logout"):
-        st.session_state.authenticated = False
-        st.session_state.username = ""
-        st.session_state.current_module = None
-        st.rerun()
-
-    # Show user info
-    st.sidebar.markdown(f"Logged in as: **{st.session_state.username}**")
-    
-    # Apply theme settings when authenticated
-    apply_theme_settings()
-
-# ======================
-# FOOTER
-# ======================
 st.markdown("---")
-st.markdown("**PPH CRM - Contact App Administrator for any help at contact@cpsharma.com**")
+st.markdown("**PPH CRM - Contract App Administrator for any help at: [contact@cpspharma.com](mailto:contact@cpspharma.com)**")
