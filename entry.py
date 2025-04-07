@@ -1470,4 +1470,4 @@ else:
         st.info("Coming soon!")
 
 st.markdown("---")
-st.markdown("**PPH CRM - Contract App Administrator for any help at: [contact@cpspharma.com](mailto:contact@cpspharma.com)**")
+st.markdown("**PPH CRM - Contract App Administrator for any help at: [contact@cpspharma.com](mailto:contact@cpspharma.com HELLO)**")
