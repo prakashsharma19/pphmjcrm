@@ -14,11 +14,12 @@ from dotenv import load_dotenv
 import json
 import spacy
 from spacy.matcher import Matcher
+import gc
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# Load English language model for spaCy
+# Initialize spaCy with error handling
 try:
     nlp = spacy.load("en_core_web_sm")
 except:
@@ -78,169 +79,6 @@ st.set_page_config(page_title="PPH CRM", layout="wide", initial_sidebar_state="e
 init_session_state()
 
 # ======================
-# NLP PROCESSING FUNCTIONS
-# ======================
-def extract_department(text):
-    """Extract department from text, prioritizing 'Department' over 'School'"""
-    doc = nlp(text)
-    department = ""
-    school = ""
-    
-    # Patterns to match department and school
-    patterns = {
-        "department": [{"LOWER": "department"}, {"LOWER": "of"}, {}],
-        "school": [{"LOWER": "school"}, {"LOWER": "of"}, {}]
-    }
-    
-    matcher = Matcher(nlp.vocab)
-    matcher.add("DEPARTMENT", [patterns["department"]])
-    matcher.add("SCHOOL", [patterns["school"]])
-    
-    matches = matcher(doc)
-    
-    for match_id, start, end in matches:
-        string_id = nlp.vocab.strings[match_id]
-        span = doc[start:end]
-        
-        if string_id == "DEPARTMENT":
-            department = span.text
-        elif string_id == "SCHOOL" and not department:
-            school = span.text
-    
-    return department if department else school
-
-def extract_university(text):
-    """Extract university from text"""
-    doc = nlp(text)
-    
-    # Look for organizations that are likely universities
-    for ent in doc.ents:
-        if ent.label_ == "ORG" and ("university" in ent.text.lower() or "institute" in ent.text.lower()):
-            return ent.text
-    
-    # Fallback to finding "University" in text
-    for token in doc:
-        if token.text.lower() == "university":
-            start = token.i
-            # Get the full university name
-            while start > 0 and doc[start-1].ent_type_ in ("", "ORG"):
-                start -= 1
-            return doc[start:token.i+1].text
-    
-    return ""
-
-def extract_country(text):
-    """Extract country from text"""
-    doc = nlp(text)
-    
-    for ent in doc.ents:
-        if ent.label_ == "GPE" and len(ent.text.split()) <= 3:
-            return ent.text
-    
-    return ""
-
-def extract_email(text):
-    """Extract email from text"""
-    doc = nlp(text)
-    
-    for token in doc:
-        if "@" in token.text:
-            # Clean up email
-            email = token.text.lower()
-            email = email.replace("(at)", "@").replace("[at]", "@")
-            email = email.replace("(dot)", ".").replace("[dot]", ".")
-            email = email.replace(" ", "")
-            return email
-    
-    return ""
-
-def format_with_nlp(entry):
-    """Format entry using NLP before sending to AI"""
-    lines = [line.strip() for line in entry.split('\n') if line.strip()]
-    
-    # Extract name (first line is usually name)
-    name = lines[0].replace("Prof.", "").replace("Professor", "").strip()
-    if not name:
-        return None
-    
-    # Join all lines for processing
-    full_text = " ".join(lines)
-    
-    # Extract components
-    department = extract_department(full_text)
-    university = extract_university(full_text)
-    country = extract_country(full_text)
-    email = extract_email(full_text)
-    
-    if not email:
-        return None
-    
-    # Build formatted entry
-    formatted_lines = [f"Professor {name}"]
-    if department:
-        formatted_lines.append(department)
-    if university:
-        formatted_lines.append(university)
-    if country:
-        formatted_lines.append(country)
-    formatted_lines.append(email)
-    
-    return "\n".join(formatted_lines)
-
-def preprocess_with_nlp(text):
-    """Process raw text with NLP before AI formatting"""
-    entries = [entry.strip() for entry in text.split("\n\n") if entry.strip()]
-    formatted_entries = []
-    
-    for entry in entries:
-        formatted = format_with_nlp(entry)
-        if formatted:
-            formatted_entries.append(formatted)
-    
-    return "\n\n".join(formatted_entries)
-
-# ======================
-# FIREBASE INITIALIZATION
-# ======================
-def initialize_firebase():
-    """Initialize Firebase with proper error handling and singleton pattern"""
-    try:
-        if firebase_admin._apps:
-            st.session_state.cloud_status = "Connected"
-            return True
-            
-        firebase_config = {
-            "type": st.secrets["firebase"]["type"],
-            "project_id": st.secrets["firebase"]["project_id"],
-            "private_key_id": st.secrets["firebase"]["private_key_id"],
-            "private_key": st.secrets["firebase"]["private_key"].replace('\\n', '\n'),
-            "client_email": st.secrets["firebase"]["client_email"],
-            "client_id": st.secrets["firebase"]["client_id"],
-            "auth_uri": st.secrets["firebase"]["auth_uri"],
-            "token_uri": st.secrets["firebase"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"],
-            "universe_domain": st.secrets["firebase"]["universe_domain"]
-        }
-
-        cred = credentials.Certificate(firebase_config)
-        firebase_admin.initialize_app(cred)
-        
-        st.session_state.cloud_status = "Connected"
-        return True
-        
-    except Exception as e:
-        st.session_state.cloud_status = "Error"
-        st.session_state.cloud_error = str(e)
-        return False
-
-def get_firestore_db():
-    if not initialize_firebase():
-        st.error(f"Firebase initialization failed: {st.session_state.cloud_error}")
-        return None
-    return firestore.client()
-
-# ======================
 # UTILITY FUNCTIONS
 # ======================
 def load_logo():
@@ -267,15 +105,11 @@ def is_similar(text1, text2, threshold=0.85):
 def get_journal_abbreviation(journal_name):
     common_words = ['and', 'of', 'the', 'in', 'journal', 'jp']
     words = [word for word in journal_name.split() if word.lower() not in common_words]
-    
     if journal_name.startswith("JP "):
         return "JP" + journal_name.split()[1][0].upper()
-    
     abbreviation = ''.join([word[0].upper() for word in words])
-    
     if len(abbreviation) < 3:
         abbreviation = ''.join([word[:2].upper() for word in words[:2]])
-    
     return abbreviation
 
 def get_suggested_filename(journal_name):
@@ -286,330 +120,218 @@ def process_uploaded_file(uploaded_file):
         stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
         content = stringio.read()
         return [entry.strip() for entry in content.split("\n\n") if entry.strip()]
-    except Exception:
+    except Exception as e:
+        st.error(f"Error processing file: {str(e)}")
         return []
 
 def extract_author_email(entry):
     lines = entry.split('\n')
     if len(lines) < 2:
         return None, None
-    
     name = lines[0].replace("Professor", "").strip()
     email = lines[-1].strip()
-    
     return name, email
 
 # ======================
-# DATABASE FUNCTIONS
+# FIREBASE FUNCTIONS
 # ======================
-def test_service_connections():
-    """Test both Cloud and AI connections with retries"""
-    max_retries = 3
-    retry_delay = 2  # seconds
-    
-    # Test AI
-    for attempt in range(max_retries):
-        try:
-            api_key = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
-            if not api_key:
-                st.session_state.ai_status = "Error"
-                st.session_state.ai_error = "No API key provided"
-                break
-                
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-1.5-flash-latest")
-            response = model.generate_content("Test connection")
-            if response.text:
-                st.session_state.ai_status = "Connected"
-                st.session_state.ai_error = ""
-                break
-        except Exception as e:
-            st.session_state.ai_status = "Error"
-            st.session_state.ai_error = str(e)
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay * (attempt + 1))
-    
-    # Test Cloud
-    for attempt in range(max_retries):
-        try:
-            db = get_firestore_db()
-            if db:
-                db.collection("test").document("test").get()
-                st.session_state.cloud_status = "Connected"
-                st.session_state.cloud_error = ""
-                break
-        except Exception as e:
-            st.session_state.cloud_status = "Error"
-            st.session_state.cloud_error = str(e)
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay * (attempt + 1))
+def initialize_firebase():
+    try:
+        if firebase_admin._apps:
+            st.session_state.cloud_status = "Connected"
+            return True
+            
+        firebase_config = {
+            "type": st.secrets["firebase"]["type"],
+            "project_id": st.secrets["firebase"]["project_id"],
+            "private_key_id": st.secrets["firebase"]["private_key_id"],
+            "private_key": st.secrets["firebase"]["private_key"].replace('\\n', '\n'),
+            "client_email": st.secrets["firebase"]["client_email"],
+            "client_id": st.secrets["firebase"]["client_id"],
+            "auth_uri": st.secrets["firebase"]["auth_uri"],
+            "token_uri": st.secrets["firebase"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"],
+            "universe_domain": st.secrets["firebase"]["universe_domain"]
+        }
 
-def check_services_status():
-    """Check and update the status of Cloud and AI services"""
-    st.session_state.cloud_status = "Checking..."
-    st.session_state.ai_status = "Checking..."
-    st.session_state.cloud_error = ""
-    st.session_state.ai_error = ""
-    test_service_connections()
-
-def initialize_services():
-    API_KEY = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
-    
-    if not API_KEY:
-        st.session_state.ai_status = "Error"
-        st.session_state.ai_error = "No valid API key provided"
-        st.session_state.show_api_key_input = True
+        cred = credentials.Certificate(firebase_config)
+        firebase_admin.initialize_app(cred)
+        st.session_state.cloud_status = "Connected"
+        return True
+        
+    except Exception as e:
+        st.session_state.cloud_status = "Error"
+        st.session_state.cloud_error = str(e)
         return False
 
-    try:
-        genai.configure(api_key=API_KEY)
-        st.session_state.ai_status = "Connected"
-    except Exception as e:
-        st.session_state.ai_status = "Error"
-        st.session_state.ai_error = str(e)
-        st.session_state.show_api_key_input = True
-        return False
+def get_firestore_db():
+    if not initialize_firebase():
+        st.error(f"Firebase initialization failed: {st.session_state.cloud_error}")
+        return None
+    return firestore.client()
 
-    return initialize_firebase()
-
-# Check services status on startup
-if st.session_state.cloud_status == 'Not checked' and st.session_state.ai_status == 'Not checked':
-    check_services_status()
-
-services_initialized = initialize_services()
-
-# Predefined journal list
-JOURNAL_NAMES = [
-    "Computer Science and Artificial Intelligence",
-    "Advanced Studies in Artificial Intelligence",
-    "Advances in Computer Science and Engineering",
-    "Far East Journal of Experimental and Theoretical Artificial Intelligence",
-    "Advances and Applications in Fluid Mechanics",
-    "Advances in Fuzzy Sets and Systems",
-    "Far East Journal of Electronics and Communications",
-    "Far East Journal of Mechanical Engineering and Physics",
-    "International Journal of Nutrition and Dietetics",
-    "International Journal of Materials Engineering and Technology",
-    "JP Journal of Solids and Structures",
-    "Advances and Applications in Discrete Mathematics",
-    "Advances and Applications in Statistics",
-    "Far East Journal of Applied Mathematics",
-    "Far East Journal of Dynamical Systems",
-    "Far East Journal of Mathematical Sciences (FJMS)",
-    "Far East Journal of Theoretical Statistics",
-    "JP Journal of Algebra, Number Theory and Applications",
-    "JP Journal of Biostatistics",
-    "JP Journal of Fixed Point Theory and Applications",
-    "JP Journal of Heat and Mass Transfer",
-    "Surveys in Mathematics and Mathematical Sciences",
-    "Universal Journal of Mathematics and Mathematical Sciences"
-]
-
-def get_available_journals():
-    all_journals = []
-    db = get_firestore_db()
-    if db:
-        try:
-            journals_ref = db.collection("journals").stream()
-            all_journals = [journal.id for journal in journals_ref]
-        except Exception as e:
-            st.error(f"Error fetching journals: {str(e)}")
-    return sorted(list(set(JOURNAL_NAMES + all_journals)))
-
-st.session_state.available_journals = get_available_journals()
-
-def check_duplicates(new_entries):
-    unique_entries = []
-    duplicate_info = {}
-    db = get_firestore_db()
-    if not db:
-        return unique_entries, duplicate_info
-        
-    author_entries = {}
+# ======================
+# NLP PROCESSING
+# ======================
+def extract_department(text):
+    doc = nlp(text)
+    department = ""
+    school = ""
     
-    for journal in db.collection("journals").stream():
-        for file in db.collection("journals").document(journal.id).collection("files").stream():
-            existing_entries = file.to_dict().get("entries", [])
-            for existing_entry in existing_entries:
-                name, email = extract_author_email(existing_entry)
-                if name and email:
-                    key = f"{name.lower()}_{email.lower()}"
-                    author_entries[key] = {
-                        "entry": existing_entry,
-                        "journal": journal.id,
-                        "filename": file.id,
-                        "timestamp": file.to_dict().get("last_updated", datetime.now())
-                    }
+    patterns = {
+        "department": [{"LOWER": "department"}, {"LOWER": "of"}, {}],
+        "school": [{"LOWER": "school"}, {"LOWER": "of"}, {}]
+    }
     
-    for new_entry in new_entries:
-        name, email = extract_author_email(new_entry)
-        if not name or not email:
-            continue
-            
-        key = f"{name.lower()}_{email.lower()}"
+    matcher = Matcher(nlp.vocab)
+    matcher.add("DEPARTMENT", [patterns["department"]])
+    matcher.add("SCHOOL", [patterns["school"]])
+    
+    matches = matcher(doc)
+    
+    for match_id, start, end in matches:
+        string_id = nlp.vocab.strings[match_id]
+        span = doc[start:end]
         
-        if key in author_entries:
-            if key not in duplicate_info:
-                duplicate_info[key] = []
-            duplicate_info[key].append({
-                "entry": new_entry,
-                "journal": "NEW_UPLOAD",
-                "filename": "NEW_UPLOAD",
-                "timestamp": datetime.now()
-            })
-        else:
-            unique_entries.append(new_entry)
-            author_entries[key] = {
-                "entry": new_entry,
-                "journal": "NEW_UPLOAD",
-                "filename": "NEW_UPLOAD",
-                "timestamp": datetime.now()
-            }
+        if string_id == "DEPARTMENT":
+            department = span.text
+        elif string_id == "SCHOOL" and not department:
+            school = span.text
     
-    return unique_entries, duplicate_info
+    return department if department else school
 
-def delete_all_duplicates():
-    db = get_firestore_db()
-    if not db:
-        return False, "Database connection failed"
+def extract_university(text):
+    doc = nlp(text)
+    for ent in doc.ents:
+        if ent.label_ == "ORG" and ("university" in ent.text.lower() or "institute" in ent.text.lower()):
+            return ent.text
     
-    try:
-        all_entries = {}
-        journals_to_update = {}
-        
-        for journal in db.collection("journals").stream():
-            journal_name = journal.id
-            journals_to_update[journal_name] = {}
-            
-            for file in db.collection("journals").document(journal_name).collection("files").stream():
-                file_name = file.id
-                entries = file.to_dict().get("entries", [])
-                last_updated = file.to_dict().get("last_updated", datetime.now())
-                
-                journals_to_update[journal_name][file_name] = {
-                    "entries": entries,
-                    "last_updated": last_updated
-                }
-                
-                for entry in entries:
-                    name, email = extract_author_email(entry)
-                    if name and email:
-                        key = f"{name.lower()}_{email.lower()}"
-                        
-                        if key not in all_entries:
-                            all_entries[key] = []
-                            
-                        all_entries[key].append({
-                            "entry": entry,
-                            "journal": journal_name,
-                            "filename": file_name,
-                            "timestamp": last_updated
-                        })
-        
-        entries_to_keep = {}
-        duplicates_found = 0
-        
-        for key, entries in all_entries.items():
-            if len(entries) > 1:
-                duplicates_found += len(entries) - 1
-                sorted_entries = sorted(entries, key=lambda x: x["timestamp"], reverse=True)
-                entries_to_keep[key] = sorted_entries[0]
-            else:
-                entries_to_keep[key] = entries[0]
-        
-        if duplicates_found == 0:
-            return True, "No duplicates found"
-        
-        for journal_name, files in journals_to_update.items():
-            for file_name, file_data in files.items():
-                original_entries = file_data["entries"]
-                updated_entries = []
-                
-                for entry in original_entries:
-                    name, email = extract_author_email(entry)
-                    if name and email:
-                        key = f"{name.lower()}_{email.lower()}"
-                        if key in entries_to_keep and entries_to_keep[key]["entry"] == entry:
-                            updated_entries.append(entry)
-                
-                if len(updated_entries) != len(original_entries):
-                    doc_ref = db.collection("journals").document(journal_name).collection("files").document(file_name)
-                    doc_ref.update({
-                        "entries": updated_entries,
-                        "entry_count": len(updated_entries),
-                        "last_updated": datetime.now()
-                    })
-        
-        return True, f"Removed {duplicates_found} duplicate entries, keeping only the latest versions"
+    for token in doc:
+        if token.text.lower() == "university":
+            start = token.i
+            while start > 0 and doc[start-1].ent_type_ in ("", "ORG"):
+                start -= 1
+            return doc[start:token.i+1].text
     
-    except Exception as e:
-        return False, f"Error during duplicate removal: {str(e)}"
+    return ""
 
-def format_entries_chunked(text, progress_bar, status_text):
+def extract_country(text):
+    doc = nlp(text)
+    for ent in doc.ents:
+        if ent.label_ == "GPE" and len(ent.text.split()) <= 3:
+            return ent.text
+    return ""
+
+def extract_email(text):
+    doc = nlp(text)
+    for token in doc:
+        if "@" in token.text:
+            email = token.text.lower()
+            email = email.replace("(at)", "@").replace("[at]", "@")
+            email = email.replace("(dot)", ".").replace("[dot]", ".")
+            email = email.replace(" ", "")
+            return email
+    return ""
+
+def format_with_nlp(entry):
+    lines = [line.strip() for line in entry.split('\n') if line.strip()]
+    name = lines[0].replace("Prof.", "").replace("Professor", "").strip()
+    if not name:
+        return None
+    
+    full_text = " ".join(lines)
+    department = extract_department(full_text)
+    university = extract_university(full_text)
+    country = extract_country(full_text)
+    email = extract_email(full_text)
+    
+    if not email:
+        return None
+    
+    formatted_lines = [f"Professor {name}"]
+    if department:
+        formatted_lines.append(department)
+    if university:
+        formatted_lines.append(university)
+    if country:
+        formatted_lines.append(country)
+    formatted_lines.append(email)
+    
+    return "\n".join(formatted_lines)
+
+def preprocess_with_nlp(text):
+    entries = [entry.strip() for entry in text.split("\n\n") if entry.strip()]
+    formatted_entries = []
+    
+    for entry in entries:
+        formatted = format_with_nlp(entry)
+        if formatted:
+            formatted_entries.append(formatted)
+    
+    return "\n\n".join(formatted_entries)
+
+# ======================
+# CORE FUNCTIONALITY
+# ======================
+def format_entries_chunked(text):
     if st.session_state.ai_status != "Connected":
         st.error("AI service is not available. Cannot format entries.")
         return ""
         
     start_time = time.time()
-    
-    # First process with NLP
     nlp_processed = preprocess_with_nlp(text)
     if not nlp_processed:
         return ""
     
-    # Then refine with AI
     chunk_size = 10000
     chunks = [nlp_processed[i:i+chunk_size] for i in range(0, len(nlp_processed), chunk_size)]
     formatted_parts = []
     total_chunks = len(chunks)
     
-    progress_bar.progress(0)
-    status_text.text("Starting AI processing...")
+    # Initialize progress tracking with error handling
+    try:
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        status_text.text("Starting AI processing...")
+    except Exception as e:
+        st.error(f"Progress initialization failed: {str(e)}")
+        progress_bar = None
+        status_text = None
     
     for i, chunk in enumerate(chunks):
-        elapsed = time.time() - start_time
-        chunks_processed = i + 1
-        avg_time_per_chunk = elapsed / chunks_processed
-        remaining_time = (total_chunks - chunks_processed) * avg_time_per_chunk
-        
-        progress = int(chunks_processed / total_chunks * 100)
-        progress_bar.progress(progress)
-        status_text.text(f"Processing {chunks_processed}/{total_chunks} (Est. remaining: {format_time(remaining_time)})")
-        
-        prompt = f"""Refine these pre-processed author entries to ensure consistent formatting:
-
-Professor First Name Last Name
-Department (if available)
-University/Organization
-Country
-email@domain.com
-
-RULES:
-1. Keep only the corresponding address if multiple exist
-2. Remove all street addresses, postal codes, etc. - keep only country
-3. Prioritize Department over School if both exist
-4. Remove any additional information like phone numbers, ORCID, etc.
-5. Ensure email is clean and properly formatted
-
-Example of correct formatting:
-Professor John Smith
-Department of Computer Science
-Stanford University
-United States
-jsmith@stanford.edu
-
-Text to refine:
-{chunk}
-"""
-        
         try:
+            elapsed = time.time() - start_time
+            chunks_processed = i + 1
+            avg_time_per_chunk = elapsed / chunks_processed
+            remaining_time = (total_chunks - chunks_processed) * avg_time_per_chunk
+            
+            if progress_bar:
+                progress = int(chunks_processed / total_chunks * 100)
+                progress_bar.progress(progress)
+            if status_text:
+                status_text.text(f"Processing {chunks_processed}/{total_chunks} (Est. remaining: {format_time(remaining_time)})")
+            
+            prompt = f"""Refine these pre-processed author entries..."""
+            
             model = genai.GenerativeModel("gemini-1.5-flash-latest")
             response = model.generate_content(prompt)
             if response.text:
                 formatted_parts.append(response.text.strip())
+                
+            # Clean up memory periodically
+            if i % 2 == 0:
+                gc.collect()
+                
         except Exception as e:
-            st.error(f"Error during formatting: {str(e)}")
-            pass
+            st.error(f"Error processing chunk {i+1}: {str(e)}")
+            continue
+    
+    if progress_bar:
+        progress_bar.progress(100)
+    if status_text:
+        processing_time = time.time() - start_time
+        status_text.text(f"Formatting complete! Time taken: {format_time(processing_time)}")
     
     final_entries = []
     for entry in "\n\n".join(formatted_parts).split("\n\n"):
@@ -617,9 +339,6 @@ Text to refine:
         if len(lines) >= 2 and '@' in lines[-1]:
             final_entries.append(entry)
     
-    processing_time = time.time() - start_time
-    progress_bar.progress(100)
-    status_text.text(f"Formatting complete! Time taken: {format_time(processing_time)}")
     return "\n\n".join(final_entries)
 
 def save_entries_with_progress(entries, journal, filename, progress_bar, status_text):
