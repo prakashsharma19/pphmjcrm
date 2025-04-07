@@ -19,7 +19,12 @@ from spacy.matcher import Matcher
 load_dotenv()
 
 # Load English language model for spaCy
-nlp = spacy.load("en_core_web_sm")
+try:
+    nlp = spacy.load("en_core_web_sm")
+except:
+    from spacy.cli import download
+    download("en_core_web_sm")
+    nlp = spacy.load("en_core_web_sm")
 
 # ======================
 # INITIALIZATION
@@ -679,25 +684,37 @@ def get_journal_files(journal):
     if not db or not journal:
         return []
         
-    files_ref = db.collection("journals").document(journal).collection("files")
-    return [{
-        "name": doc.id,
-        "last_updated": doc.to_dict().get("last_updated", datetime.now()),
-        "entry_count": doc.to_dict().get("entry_count", 0),
-        "entries": doc.to_dict().get("entries", [])
-    } for doc in files_ref.stream()]
+    try:
+        files_ref = db.collection("journals").document(journal).collection("files")
+        files = []
+        for doc in files_ref.stream():
+            file_data = doc.to_dict()
+            files.append({
+                "name": doc.id,
+                "last_updated": file_data.get("last_updated", datetime.now()),
+                "entry_count": file_data.get("entry_count", len(file_data.get("entries", []))),
+                "entries": file_data.get("entries", [])
+            })
+        return files
+    except Exception as e:
+        st.error(f"Error fetching files: {str(e)}")
+        return []
 
 def download_entries(journal, filename):
     db = get_firestore_db()
     if not db:
         return None, 0
         
-    doc = db.collection("journals").document(journal).collection("files").document(filename).get()
-    if doc.exists:
-        entries = doc.to_dict().get("entries", [])
-        entry_count = doc.to_dict().get("entry_count", len(entries))
-        return "\n\n".join(entries), entry_count
-    return None, 0
+    try:
+        doc = db.collection("journals").document(journal).collection("files").document(filename).get()
+        if doc.exists:
+            entries = doc.to_dict().get("entries", [])
+            entry_count = doc.to_dict().get("entry_count", len(entries))
+            return "\n\n".join(entries), entry_count
+        return None, 0
+    except Exception as e:
+        st.error(f"Error downloading entries: {str(e)}")
+        return None, 0
 
 def delete_file(journal, filename):
     db = get_firestore_db()
@@ -707,7 +724,8 @@ def delete_file(journal, filename):
     try:
         db.collection("journals").document(journal).collection("files").document(filename).delete()
         return True
-    except Exception:
+    except Exception as e:
+        st.error(f"Error deleting file: {str(e)}")
         return False
 
 def create_journal(journal_name):
@@ -719,7 +737,8 @@ def create_journal(journal_name):
         db.collection("journals").document(journal_name).set({"created": datetime.now()})
         st.session_state.available_journals = get_available_journals()
         return True
-    except Exception:
+    except Exception as e:
+        st.error(f"Error creating journal: {str(e)}")
         return False
 
 def update_entry(journal, filename, old_entry, new_entry):
@@ -741,7 +760,8 @@ def update_entry(journal, filename, old_entry, new_entry):
                 })
                 return True
         return False
-    except Exception:
+    except Exception as e:
+        st.error(f"Error updating entry: {str(e)}")
         return False
 
 def delete_entry(journal, filename, entry):
@@ -763,7 +783,8 @@ def delete_entry(journal, filename, entry):
                 })
                 return True
         return False
-    except Exception:
+    except Exception as e:
+        st.error(f"Error deleting entry: {str(e)}")
         return False
 
 def search_entries(query):
@@ -772,29 +793,33 @@ def search_entries(query):
     if not db or not query:
         return results
         
-    query = query.lower()
-    for journal in db.collection("journals").stream():
-        for file in db.collection("journals").document(journal.id).collection("files").stream():
-            if query in file.id.lower():
-                results.append({
-                    "journal": journal.id,
-                    "filename": file.id,
-                    "entry": f"File: {file.id}",
-                    "full_path": f"{journal.id} > {file.id}",
-                    "is_file": True
-                })
-            
-            entries = file.to_dict().get("entries", [])
-            for entry in entries:
-                if query in entry.lower():
+    try:
+        query = query.lower()
+        for journal in db.collection("journals").stream():
+            for file in db.collection("journals").document(journal.id).collection("files").stream():
+                if query in file.id.lower():
                     results.append({
                         "journal": journal.id,
                         "filename": file.id,
-                        "entry": entry,
+                        "entry": f"File: {file.id}",
                         "full_path": f"{journal.id} > {file.id}",
-                        "is_file": False
+                        "is_file": True
                     })
-    return results
+                
+                entries = file.to_dict().get("entries", [])
+                for entry in entries:
+                    if query in entry.lower():
+                        results.append({
+                            "journal": journal.id,
+                            "filename": file.id,
+                            "entry": entry,
+                            "full_path": f"{journal.id} > {file.id}",
+                            "is_file": False
+                        })
+        return results
+    except Exception as e:
+        st.error(f"Error searching entries: {str(e)}")
+        return []
 
 # ======================
 # UI COMPONENTS
@@ -1331,33 +1356,37 @@ def show_entry_module():
                         st.subheader(f"Files in {selected_journal}")
                         
                         for i, file in enumerate(files):
-                            with st.expander(f"{file['name']} ({file['entry_count']} entries)", key=f"file_expander_{i}"):
-                                col1, col2, col3 = st.columns([3, 1, 1])
-                                with col1:
-                                    last_updated = file["last_updated"]
-                                    if isinstance(last_updated, datetime):
-                                        st.write(f"Last updated: {last_updated.strftime('%d-%b-%Y %H:%M')}")
-                                    else:
-                                        st.write("Last updated: Unknown")
-                                
-                                with col2:
-                                    if st.button("📥 Download", key=f"dl_{file['name']}_{i}"):
-                                        content, entry_count = download_entries(selected_journal, file['name'])
-                                        if content:
-                                            st.download_button(
-                                                label="Download Now",
-                                                data=content,
-                                                file_name=f"{file['name']} ({entry_count} entries).txt",
-                                                mime="text/plain",
-                                                key=f"dl_btn_{file['name']}_{i}"
-                                            )
-                                
-                                with col3:
-                                    if st.button("🗑️ Delete", key=f"del_{file['name']}_{i}"):
-                                        st.session_state.deleting_file = {
-                                            "journal": selected_journal,
-                                            "filename": file['name']
-                                        }
+                            try:
+                                with st.expander(f"{file['name']} ({file['entry_count']} entries)", key=f"file_expander_{i}"):
+                                    col1, col2, col3 = st.columns([3, 1, 1])
+                                    with col1:
+                                        last_updated = file["last_updated"]
+                                        if isinstance(last_updated, datetime):
+                                            st.write(f"Last updated: {last_updated.strftime('%d-%b-%Y %H:%M')}")
+                                        else:
+                                            st.write("Last updated: Unknown")
+                                    
+                                    with col2:
+                                        if st.button("📥 Download", key=f"dl_{file['name']}_{i}"):
+                                            content, entry_count = download_entries(selected_journal, file['name'])
+                                            if content:
+                                                st.download_button(
+                                                    label="Download Now",
+                                                    data=content,
+                                                    file_name=f"{file['name']} ({entry_count} entries).txt",
+                                                    mime="text/plain",
+                                                    key=f"dl_btn_{file['name']}_{i}"
+                                                )
+                                    
+                                    with col3:
+                                        if st.button("🗑️ Delete", key=f"del_{file['name']}_{i}"):
+                                            st.session_state.deleting_file = {
+                                                "journal": selected_journal,
+                                                "filename": file['name']
+                                            }
+                            except Exception as e:
+                                st.error(f"Error displaying file: {str(e)}")
+                                continue
                     else:
                         st.info(f"No files yet in {selected_journal}")
         
