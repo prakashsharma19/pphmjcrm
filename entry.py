@@ -60,8 +60,8 @@ def init_session_state():
         'show_api_key_input': False,
         'delete_duplicates_mode': False,
         'show_connection_status': False,
-        'app_mode': "✏️ Create Entries",  # Changed default to Create Entries
-        'show_formatted_entries': False  # Added for toggle formatted entries
+        'app_mode': "✏️ Create Entries",
+        'show_formatted_entries': False
     }
     
     for key, default_value in session_vars.items():
@@ -690,7 +690,7 @@ def get_journal_files(journal):
 def download_entries(journal, filename):
     db = get_firestore_db()
     if not db:
-        return None
+        return None, 0
         
     doc = db.collection("journals").document(journal).collection("files").document(filename).get()
     if doc.exists:
@@ -800,7 +800,7 @@ def search_entries(query):
 # UI COMPONENTS
 # ======================
 def show_connection_status():
-    with st.sidebar.expander("📶 Connection Status", expanded=False):  # Changed to collapsed by default
+    with st.sidebar.expander("📶 Connection Status", expanded=False):
         if st.session_state.cloud_status == "Connected":
             st.success("✅ Cloud: Connected")
         elif st.session_state.cloud_status == "Error":
@@ -944,7 +944,6 @@ def apply_theme_settings():
     
     current_font_size = font_sizes.get(st.session_state.font_size, "16px")
     
-    # Set background to white and ensure text is visible
     st.markdown(f"""
     <style>
         .stApp {{
@@ -1058,7 +1057,7 @@ def show_entry_module():
     # Operation selector in main content area with unique key
     st.session_state.app_mode = st.radio(
         "Select Operation",
-        ["✏️ Create Entries", "📤 Upload Entries", "🔍 Search Database", "🗂 Manage Journals"],  # Changed order
+        ["✏️ Create Entries", "📤 Upload Entries", "🔍 Search Database", "🗂 Manage Journals"],
         key="operation_selector",
         horizontal=True
     )
@@ -1084,7 +1083,7 @@ def show_entry_module():
                         st.session_state.entries = entries
                         st.success(f"Formatted {len(entries)} entries!")
                         st.session_state.show_save_section = True
-                        st.session_state.show_formatted_entries = False  # Hide by default
+                        st.session_state.show_formatted_entries = False
                     else:
                         st.error("Formatting failed. Check your input.")
             else:
@@ -1094,7 +1093,6 @@ def show_entry_module():
             st.subheader("Formatted Entries")
             st.info(f"Total formatted entries: {len(st.session_state.entries)}")
             
-            # Toggle to show formatted entries
             if st.button("👁️ Show Formatted Entries", key="toggle_formatted_entries"):
                 st.session_state.show_formatted_entries = not st.session_state.show_formatted_entries
             
@@ -1316,7 +1314,7 @@ def show_entry_module():
     elif st.session_state.app_mode == "🗂 Manage Journals":
         st.header("🗂 Manage Journals")
         
-        tab1, tab2 = st.tabs(["View Journals", "Create New Journal"], key="journal_tabs")
+        tab1, tab2 = st.tabs(["View Journals", "Create New Journal"])
         
         with tab1:
             st.subheader("Available Journals")
@@ -1367,7 +1365,9 @@ def show_entry_module():
             st.subheader("Create New Journal")
             with st.form(key="new_journal_form"):
                 journal_name = st.text_input("Journal Name:", key="new_journal_name")
-                if st.form_submit_button("Create Journal", key="create_journal_btn"):
+                submit_button = st.form_submit_button("Create Journal")
+                
+                if submit_button:
                     if journal_name.strip():
                         if create_journal(journal_name):
                             st.success(f"Journal '{journal_name}' created successfully!")
@@ -1429,29 +1429,28 @@ else:
         
         expander = st.expander("⚙️ Settings", expanded=False)
         with expander:
-            with st.form("settings_form"):
-                st.subheader("Appearance")
-                new_font_size = st.selectbox(
-                    "Font Size",
-                    ["Small", "Medium", "Large"],
-                    index=["Small", "Medium", "Large"].index(st.session_state.font_size),
-                    key="sidebar_font_size"
-                )
-                
-                new_theme = st.selectbox(
-                    "Theme",
-                    ["Light", "Dark"],
-                    index=["Light", "Dark"].index(st.session_state.theme),
-                    key="sidebar_theme"
-                )
-                
-                if st.form_submit_button("Save Settings", key="save_settings_btn"):
-                    st.session_state.font_size = new_font_size
-                    st.session_state.theme = new_theme
-                    st.session_state.bg_color = "#ffffff" if new_theme == "Light" else "#1a1a1a"
-                    st.success("Settings saved successfully!")
-                    apply_theme_settings()
-                    st.rerun()
+            st.subheader("Appearance")
+            new_font_size = st.selectbox(
+                "Font Size",
+                ["Small", "Medium", "Large"],
+                index=["Small", "Medium", "Large"].index(st.session_state.font_size),
+                key="sidebar_font_size"
+            )
+            
+            new_theme = st.selectbox(
+                "Theme",
+                ["Light", "Dark"],
+                index=["Light", "Dark"].index(st.session_state.theme),
+                key="sidebar_theme"
+            )
+            
+            if st.button("Save Settings", key="save_settings_btn"):
+                st.session_state.font_size = new_font_size
+                st.session_state.theme = new_theme
+                st.session_state.bg_color = "#ffffff" if new_theme == "Light" else "#1a1a1a"
+                st.success("Settings saved successfully!")
+                apply_theme_settings()
+                st.rerun()
         
         st.markdown("---")
         st.markdown(f"Logged in as: **{st.session_state.username}**")
@@ -1471,4 +1470,4 @@ else:
         st.info("Coming soon!")
 
 st.markdown("---")
-st.markdown("**PPH CRM - Contract App Administrator for any help at: [contact@cpspharma.com](mailto:contact@cpspharma.com HELLO)**")
+st.markdown("**PPH CRM - Contract App Administrator for any help at: [contact@cpspharma.com](mailto:contact@cpspharma.com)**")
