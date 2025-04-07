@@ -86,3 +86,4 @@ virtualenv==20.29.3
 watchdog==6.0.0
 wheel==0.45.1
 python-dotenv
+spacy
