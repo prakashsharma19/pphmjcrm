@@ -1428,7 +1428,7 @@ else:
         st.markdown("---")
         
         expander = st.expander("⚙️ Settings", expanded=False)
-with expander:
+        with expander:
             with st.form("settings_form"):
                 st.subheader("Appearance")
                 new_font_size = st.selectbox(
