@@ -63,6 +63,38 @@ def init_session_state():
 st.set_page_config(page_title="PPH CRM", layout="wide", initial_sidebar_state="expanded")
 init_session_state()
 
+# Helper functions
+def format_time(seconds):
+    """Format time in seconds to human-readable format"""
+    if seconds < 60:
+        return f"{seconds:.2f} seconds"
+    elif seconds < 3600:
+        minutes = seconds // 60
+        seconds = seconds % 60
+        return f"{int(minutes)} minutes {int(seconds)} seconds"
+    else:
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        return f"{int(hours)} hours {int(minutes)} minutes"
+
+def get_suggested_filename(journal):
+    """Generate a suggested filename based on journal name"""
+    if not journal:
+        return "entries.txt"
+    clean_name = re.sub(r'[^a-zA-Z0-9]', '_', journal)
+    return f"{clean_name}_{datetime.now().strftime('%Y%m%d')}.txt"
+
+def process_uploaded_file(uploaded_file):
+    """Process uploaded file and return entries"""
+    try:
+        stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
+        text = stringio.read()
+        entries = [entry.strip() for entry in text.split("\n\n") if entry.strip()]
+        return entries
+    except Exception as e:
+        st.error(f"Error processing file: {str(e)}")
+        return []
+
 # Regex processing functions
 def preprocess_with_regex(text):
     """Clean up text before sending to AI"""
@@ -482,14 +514,6 @@ def search_entries(query):
 
 # AI processing function
 def format_entries_chunked(text, status_text):
-        def format_time(seconds):
-        if seconds < 60:
-            return f"{seconds:.2f} seconds"
-        else:
-            minutes = seconds // 60
-            remaining_seconds = seconds % 60
-            return f"{int(minutes)} min {remaining_seconds:.2f} sec"
-
     if st.session_state.ai_status != "Connected":
         st.error("AI service is not available")
         return ""
