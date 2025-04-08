@@ -489,6 +489,7 @@ def format_entries_chunked(text, status_text):
         minutes = seconds // 60
         remaining_seconds = seconds % 60
         return f"{int(minutes)} min {remaining_seconds:.2f} sec"
+
     if st.session_state.ai_status != "Connected":
         st.error("AI service is not available")
         return ""
