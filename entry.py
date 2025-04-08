@@ -14,17 +14,46 @@ from dotenv import load_dotenv
 import json
 import spacy
 from spacy.matcher import Matcher
+from spacy.language import Language
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Load English language model for spaCy
-try:
-    nlp = spacy.load("en_core_web_sm")
-except:
-    from spacy.cli import download
-    download("en_core_web_sm")
-    nlp = spacy.load("en_core_web_sm")
+# Load multiple language models for spaCy
+language_models = {
+    'en': None,
+    'es': None,
+    'fr': None,
+    'de': None,
+    'it': None,
+    'pt': None,
+    'ru': None,
+    'zh': None,
+    'ja': None,
+    'ar': None
+}
+
+def load_language_models():
+    for lang in language_models:
+        try:
+            if lang == 'en':
+                language_models[lang] = spacy.load("en_core_web_sm")
+            elif lang == 'zh':
+                language_models[lang] = spacy.load("zh_core_web_sm")
+            elif lang == 'ja':
+                language_models[lang] = spacy.load("ja_core_news_sm")
+            else:
+                try:
+                    language_models[lang] = spacy.load(f"{lang}_core_news_sm")
+                except:
+                    # Fallback to blank model if specific model not available
+                    language_models[lang] = spacy.blank(lang)
+        except:
+            from spacy.cli import download
+            download(f"{lang}_core_news_sm")
+            language_models[lang] = spacy.load(f"{lang}_core_news_sm")
+
+load_language_models()
 
 # ======================
 # INITIALIZATION
@@ -78,84 +107,107 @@ st.set_page_config(page_title="PPH CRM", layout="wide", initial_sidebar_state="e
 init_session_state()
 
 # ======================
-# NLP PROCESSING FUNCTIONS
+# ENHANCED NLP PROCESSING FUNCTIONS
 # ======================
-def extract_department(text):
-    """Extract department from text, prioritizing 'Department' over 'School'"""
+def detect_language(text):
+    """Simple language detection based on common words"""
+    text = text.lower()
+    lang_scores = {
+        'en': sum(1 for word in ['the', 'and', 'of', 'university', 'department'] if word in text),
+        'es': sum(1 for word in ['y', 'de', 'universidad', 'departamento'] if word in text),
+        'fr': sum(1 for word in ['et', 'de', 'université', 'département'] if word in text),
+        'de': sum(1 for word in ['und', 'der', 'universität', 'abteilung'] if word in text),
+        'it': sum(1 for word in ['e', 'di', 'università', 'dipartimento'] if word in text),
+        'pt': sum(1 for word in ['e', 'de', 'universidade', 'departamento'] if word in text),
+        'ru': sum(1 for word in ['и', 'университет', 'кафедра'] if word in text),
+        'zh': sum(1 for word in ['大学', '系'] if word in text),
+        'ja': sum(1 for word in ['大学', '学科'] if word in text),
+        'ar': sum(1 for word in ['جامعة', 'قسم'] if word in text)
+    }
+    return max(lang_scores.items(), key=lambda x: x[1])[0]
+
+def extract_institution_info(text):
+    """Extract institution information from text in any language"""
+    lang = detect_language(text)
+    nlp = language_models[lang]
     doc = nlp(text)
-    department = ""
-    school = ""
     
-    # Patterns to match department and school
-    patterns = {
-        "department": [{"LOWER": "department"}, {"LOWER": "of"}, {}],
-        "school": [{"LOWER": "school"}, {"LOWER": "of"}, {}]
+    institution_types = [
+        'university', 'college', 'institute', 'academy', 'school', 
+        'université', 'universidad', 'universität', 'università', '大学', 'جامعة',
+        'department', 'faculty', 'laboratory', 'institute', 'center', 'centre',
+        'département', 'departamento', 'abteilung', 'dipartimento', '系', 'قسم'
+    ]
+    
+    institution_info = {
+        'name': '',
+        'type': '',
+        'department': '',
+        'country': '',
+        'email': ''
     }
     
-    matcher = Matcher(nlp.vocab)
-    matcher.add("DEPARTMENT", [patterns["department"]])
-    matcher.add("SCHOOL", [patterns["school"]])
-    
-    matches = matcher(doc)
-    
-    for match_id, start, end in matches:
-        string_id = nlp.vocab.strings[match_id]
-        span = doc[start:end]
-        
-        if string_id == "DEPARTMENT":
-            department = span.text
-        elif string_id == "SCHOOL" and not department:
-            school = span.text
-    
-    return department if department else school
-
-def extract_university(text):
-    """Extract university from text"""
-    doc = nlp(text)
-    
-    # Look for organizations that are likely universities
-    for ent in doc.ents:
-        if ent.label_ == "ORG" and ("university" in ent.text.lower() or "institute" in ent.text.lower()):
-            return ent.text
-    
-    # Fallback to finding "University" in text
-    for token in doc:
-        if token.text.lower() == "university":
-            start = token.i
-            # Get the full university name
-            while start > 0 and doc[start-1].ent_type_ in ("", "ORG"):
-                start -= 1
-            return doc[start:token.i+1].text
-    
-    return ""
-
-def extract_country(text):
-    """Extract country from text"""
-    doc = nlp(text)
-    
-    for ent in doc.ents:
-        if ent.label_ == "GPE" and len(ent.text.split()) <= 3:
-            return ent.text
-    
-    return ""
-
-def extract_email(text):
-    """Extract email from text"""
-    doc = nlp(text)
-    
+    # Extract email
     for token in doc:
         if "@" in token.text:
-            # Clean up email
             email = token.text.lower()
             email = email.replace("(at)", "@").replace("[at]", "@")
             email = email.replace("(dot)", ".").replace("[dot]", ".")
             email = email.replace(" ", "")
-            return email
+            institution_info['email'] = email
+            break
     
-    return ""
+    # Extract country (GPE = geopolitical entity)
+    for ent in doc.ents:
+        if ent.label_ == "GPE" and len(ent.text.split()) <= 3:
+            institution_info['country'] = ent.text
+            break
+    
+    # Extract institution name and type
+    for token in doc:
+        lower_token = token.text.lower()
+        if any(inst_type in lower_token for inst_type in institution_types):
+            # Get the full institution name
+            start = token.i
+            while start > 0 and doc[start-1].ent_type_ in ("", "ORG"):
+                start -= 1
+            end = token.i + 1
+            while end < len(doc) and doc[end].ent_type_ in ("", "ORG"):
+                end += 1
+            
+            institution_name = doc[start:end].text
+            if not institution_info['name']:
+                institution_info['name'] = institution_name
+                institution_info['type'] = token.text
+    
+    # Extract department/school/faculty
+    department_patterns = [
+        [{"LOWER": {"IN": ["department", "dept", "departamento", "département", "abteilung", "系", "قسم"]}}],
+        [{"LOWER": {"IN": ["school", "faculty", "escuela", "école", "fakultät", "学部"]}}],
+        [{"LOWER": {"IN": ["laboratory", "lab", "laboratoire", "laboratorio"]}}],
+        [{"LOWER": {"IN": ["institute", "institut", "instituto", "研究所"]}}],
+        [{"LOWER": {"IN": ["center", "centre", "centro", "مركز"]}}]
+    ]
+    
+    matcher = Matcher(nlp.vocab)
+    for i, pattern in enumerate(department_patterns):
+        matcher.add(f"DEPT_{i}", [pattern])
+    
+    matches = matcher(doc)
+    for match_id, start, end in matches:
+        span = doc[start:end]
+        # Get the full department name
+        while start > 0 and doc[start-1].ent_type_ in ("", "ORG"):
+            start -= 1
+        while end < len(doc) and doc[end].ent_type_ in ("", "ORG"):
+            end += 1
+        institution_info['department'] = doc[start:end].text
+        break
+    
+    return institution_info
 
 def format_with_nlp(entry):
-    """Format entry using NLP before sending to AI"""
+    """Format entry using enhanced NLP processing"""
     lines = [line.strip() for line in entry.split('\n') if line.strip()]
     
     # Extract name (first line is usually name)
@@ -167,23 +219,20 @@ def format_with_nlp(entry):
     full_text = " ".join(lines)
     
     # Extract components
-    department = extract_department(full_text)
-    university = extract_university(full_text)
-    country = extract_country(full_text)
-    email = extract_email(full_text)
+    info = extract_institution_info(full_text)
     
-    if not email:
+    if not info['email']:
         return None
     
     # Build formatted entry
     formatted_lines = [f"Professor {name}"]
-    if department:
-        formatted_lines.append(department)
-    if university:
-        formatted_lines.append(university)
-    if country:
-        formatted_lines.append(country)
-    formatted_lines.append(email)
+    if info['department']:
+        formatted_lines.append(info['department'])
+    if info['name']:
+        formatted_lines.append(info['name'])
+    if info['country']:
+        formatted_lines.append(info['country'])
+    formatted_lines.append(info['email'])
     
     return "\n".join(formatted_lines)
 
@@ -579,17 +628,19 @@ def format_entries_chunked(text, status_text):
         prompt = f"""Refine these pre-processed author entries to ensure consistent formatting:
 
 Professor First Name Last Name
-Department (if available)
-University/Organization
+Department/Laboratory/School (if available)
+University/Organization/Institution
 Country
 email@domain.com
 
 RULES:
 1. Keep only the corresponding address if multiple exist
 2. Remove all street addresses, postal codes, etc. - keep only country
-3. Prioritize Department over School if both exist
-4. Remove any additional information like phone numbers, ORCID, etc.
-5. Ensure email is clean and properly formatted
+3. Keep all institution types (university, college, institute, etc.)
+4. Keep all department types (department, school, faculty, laboratory, etc.)
+5. Remove any additional information like phone numbers, ORCID, etc.
+6. Ensure email is clean and properly formatted
+7. Preserve original language of the address
 
 Example of correct formatting:
 Professor John Smith
@@ -597,6 +648,12 @@ Department of Computer Science
 Stanford University
 United States
 jsmith@stanford.edu
+
+Professor Maria García
+Escuela de Ingeniería
+Universidad de Barcelona
+Spain
+mgarcia@ub.edu
 
 Text to refine:
 {chunk}
