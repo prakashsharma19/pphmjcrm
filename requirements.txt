@@ -1,10 +1,34 @@
+# Core Framework
 streamlit==1.36.0
+
+# AI & Cloud Services
 google-generativeai==0.3.2
 firebase-admin==6.2.0
-python-dotenv==1.0.0
+
+# NLP Processing - Multilingual Support
 spacy==3.7.4
-Pillow==10.3.0
-requests==2.32.3
-numpy==1.26.4
-protobuf==4.25.6
 https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.0/en_core_web_sm-3.7.0-py3-none-any.whl
+https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.7.0/es_core_news_sm-3.7.0-py3-none-any.whl
+https://github.com/explosion/spacy-models/releases/download/fr_core_news_sm-3.7.0/fr_core_news_sm-3.7.0-py3-none-any.whl
+https://github.com/explosion/spacy-models/releases/download/de_core_news_sm-3.7.0/de_core_news_sm-3.7.0-py3-none-any.whl
+https://github.com/explosion/spacy-models/releases/download/it_core_news_sm-3.7.0/it_core_news_sm-3.7.0-py3-none-any.whl
+https://github.com/explosion/spacy-models/releases/download/pt_core_news_sm-3.7.0/pt_core_news_sm-3.7.0-py3-none-any.whl
+https://github.com/explosion/spacy-models/releases/download/ru_core_news_sm-3.7.0/ru_core_news_sm-3.7.0-py3-none-any.whl
+https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.7.0/zh_core_web_sm-3.7.0-py3-none-any.whl
+https://github.com/explosion/spacy-models/releases/download/ja_core_news_sm-3.7.0/ja_core_news_sm-3.7.0-py3-none-any.whl
+protobuf==4.25.6  # Required for Gemini AI
+
+# Utilities
+python-dotenv==1.0.0
+Pillow==10.3.0     # For image processing (logo)
+requests==2.32.3   # For HTTP requests
+numpy==1.26.4      # Dependency for spaCy/Firebase
+
+# Performance & Stability
+tqdm==4.66.2       # Progress bars (used by spaCy)
+typing-extensions==4.9.0  # Compatibility
+setuptools==68.2.2  # Prevents installation issues
+wheel==0.41.3       # Ensures proper package building
+
+# Additional dependencies for multilingual support
+langdetect==1.0.9   # For language detection
