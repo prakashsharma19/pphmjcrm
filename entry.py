@@ -1423,14 +1423,13 @@ if __name__ == "__main__":
             
             st.markdown("---")
             
-            with = st.expander("⚙️ Settings", expanded=False)
-            
-                st.subheader("Appearance")
-                new_font_size = st.selectbox(
-                    "Font Size",
-                    ["Small", "Medium", "Large"],
-                    index=["Small", "Medium", "Large"].index(st.session_state.font_size)
-                )
+            with st.expander("⚙️ Settings", expanded=False):
+    st.subheader("Appearance")
+    new_font_size = st.selectbox(
+        "Font Size",
+        ["Small", "Medium", "Large"],
+        index=["Small", "Medium", "Large"].index(st.session_state.font_size)
+    )
                 
                 new_theme = st.selectbox(
                     "Theme",
