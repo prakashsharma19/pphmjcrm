@@ -615,8 +615,10 @@ email@domain.com
 RULES:
 1. Only include department line if available
 2. Only include most specific university name
-3. Remove all addresses, postal codes, building numbers
+3. If University is given then don't take college
+4. Remove all addresses, postal codes, building numbers
 4. Keep exactly one line per component
+5. If multiple address are given for the same author, only take corresponding address
 5. Remove all extra information
 
 Example:
