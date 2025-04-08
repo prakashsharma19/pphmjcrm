@@ -619,7 +619,8 @@ RULES:
 4. Remove all addresses, postal codes, building numbers
 4. Keep exactly one line per component
 5. If multiple address are given for the same author, only take corresponding address
-5. Remove all extra information
+7. Always separate the Department, University, and all affiliations onto individual lines. 
+6. Remove all extra information
 
 Example:
 Manish Kumar
