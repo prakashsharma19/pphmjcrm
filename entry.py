@@ -1424,7 +1424,7 @@ if __name__ == "__main__":
             st.markdown("---")
             
             with = st.expander("⚙️ Settings", expanded=False)
-            with expander:
+            
                 st.subheader("Appearance")
                 new_font_size = st.selectbox(
                     "Font Size",
