@@ -601,7 +601,7 @@ def format_entries_chunked(text, status_text):
     formatted_parts = []
     
     progress_bar = st.progress(0)
-    status_text.text("Starting AI processing...")
+    status_text.text("Processing...")
     
     # Get the best available prompt
     best_prompt = """You are an intelligent academic address refiner. Given a raw academic author affiliation block, clean and format the address into exactly five lines according to the structure below:
