@@ -482,7 +482,7 @@ def search_entries(query):
 
 # AI processing function
 def format_entries_chunked(text, status_text):
-    def format_time(seconds):
+        def format_time(seconds):
     if seconds < 60:
         return f"{seconds:.2f} seconds"
     else:
