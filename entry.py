@@ -884,7 +884,7 @@ def show_login_page():
                     "rajeev": "rajeev123@",
                     "ashish": "ashish123@",
                     "arun": "arunazad123@",
-                    "admin": "admin123"
+                    "admin": "admin123!@#"
                 }
                 
                 if username.lower() in valid_users and password == valid_users[username.lower()]:
