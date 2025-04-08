@@ -604,27 +604,30 @@ def format_entries_chunked(text, status_text):
     status_text.text("Starting AI processing...")
     
     # Get the best available prompt
-    best_prompt = """Format these author entries exactly as:
+    best_prompt = """You are an intelligent academic address refiner. Given a raw academic author affiliation block, clean and format the address into exactly five lines according to the structure below:
 
-Name
-Department (if available)
-University (if available)
-Country (if available)
+Name  
+Department (if available)  
+University (most specific, if available)  
+Country (if available)  
 email@domain.com
 
-RULES:
-1. Only include department line if available
-2. Only include most specific university name
-3. Remove all addresses, postal codes, building numbers
-4. Keep exactly one line per component
-5. Remove all extra information
+Rules to Follow:
 
-Example:
-Manish Kumar
-Department of Physics
-University of Delhi
-India
-mkumar2@arsd.du.ac.in
+1. Include the Department only if explicitly mentioned (e.g., Department of Chemistry or School of Engineering).
+2. Only include the most specific University or Institute name (e.g., Harbin Institute of Technology).
+3. If both a College and a University are listed, retain only the University.
+4. Remove all the following:
+	- Postal codes, cities, buildings, room numbers, and internal unit codes.
+	- Lab names, centers, or research groups unless no department or school is present.
+	- Extra metadata like "View in Scopus", "Corresponding Author", "Authors at", etc.
+5. Format with exactly one component per line (Name, Department, University, Country, Email) and no blank lines.
+6. If multiple affiliations are given:
+	- Only include the Corresponding Author's affiliation if mentioned.
+	- If not specified, choose the most complete university-level address (one with department/school and university).
+7. Preserve proper capitalization, and avoid abbreviations unless officially part of the name.
+8. Never include duplicate information, address fragments, or unrelated affiliations.
+
 
 Entries to format:
 {chunk}"""
