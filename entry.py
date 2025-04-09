@@ -1467,4 +1467,4 @@ if __name__ == "__main__":
             st.info("Coming soon!")
 
     st.markdown("---")
-    st.markdown("**PPH CRM - Contract App Administrator for any help at: [contact@cpsharma.com](mailto:contact@cpsharma.com)**")
+    st.markdown("**PPH CRM - Contact App Administrator for any help at: [contact@cpsharma.com](mailto:contact@cpsharma.com)**")
