@@ -627,7 +627,7 @@ Rules to Follow:
 	- If not specified, choose the most complete university-level address (one with department/school and university).
 7. Preserve proper capitalization, and avoid abbreviations unless officially part of the name.
 8. Never include duplicate information, address fragments, or unrelated affiliations.
-9. Take only "Corresponding author at" address if given, in multiple address of single author.
+9. Take only "Corresponding authors at" address if given, in multiple address of single author.
 
 
 Entries to format:
