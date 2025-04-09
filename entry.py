@@ -1139,7 +1139,7 @@ def show_entry_module():
         if st.session_state.get('show_save_section', False) and st.session_state.entries:
             st.subheader("Formatted Entries")
             
-            if st.button("👁️ Show Formatted Entries"):
+            if st.button("Show Formatted Entries"):
                 st.session_state.show_formatted_entries = not st.session_state.show_formatted_entries
             
             if st.session_state.show_formatted_entries:
@@ -1451,7 +1451,7 @@ if __name__ == "__main__":
             st.markdown("---")
             st.markdown(f"Logged in as: **{st.session_state.username}**")
             
-            if st.button("🚪 Logout"):
+            if st.button("Logout"):
                 st.session_state.authenticated = False
                 st.session_state.username = ""
                 st.session_state.is_admin = False
