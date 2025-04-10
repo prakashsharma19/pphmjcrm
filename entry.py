@@ -628,7 +628,7 @@ Rules to Follow:
 7. Preserve proper capitalization, and avoid abbreviations unless officially part of the name.
 8. Never include duplicate information, address fragments, or unrelated affiliations.
 9. Take only "Corresponding authors at" address if given, in multiple address of single author.
-10. Remove unnecessary characters such as asterisks () and other formatting symbols from the formatted entries.
+10. Remove unnecessary characters such as asterisks (**) and other formatting symbols from the formatted entries.
 
 Entries to format:
 {chunk}"""
