@@ -629,7 +629,7 @@ Rules to Follow:
 7. Preserve proper capitalization, and avoid abbreviations unless officially part of the name.
 8. Never include duplicate information, address fragments, or unrelated affiliations.
 9. Take only "Corresponding authors at" address if given, in multiple address of single author.
-10. Remove unnecessary characters such as asterisks (**) and other formatting symbols from the formatted entries.
+10. Remove unnecessary characters such as asterisks (**) and other formatting symbols to the formatted entries.
 11. Do not write "Department not provided" or "email not provided" or anything similar in the formatted entries.
 12. If any author has two emails mention both emails in the formatted entries.
 13. Author names should not be bold.
