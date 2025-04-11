@@ -630,6 +630,7 @@ Rules to Follow:
 9. Take only "Corresponding authors at" address if given, in multiple address of single author.
 10. Remove unnecessary characters such as asterisks (**) and other formatting symbols from the formatted entries.
 11. Do not write "Department not provided" or "email not provided" or anything similar in the formatted entries.
+12. If any author has two emails mention both emails in the formatted entries.
 
 Entries to format:
 {chunk}"""
