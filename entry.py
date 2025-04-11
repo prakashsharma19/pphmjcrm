@@ -612,6 +612,23 @@ University (most specific, if available)
 Country (if available)  
 email@domain.com
 
+These type of entries:
+
+**Lingli Zou**
+Student Affairs Department
+Hengyang Normal University
+China
+abcmuseum2016@163.com
+
+Should be:
+
+Lingli Zou
+Student Affairs Department
+Hengyang Normal University
+China
+abcmuseum2016@163.com
+
+(asterisk should not be in the entries)
 
 Rules to Follow:
 
