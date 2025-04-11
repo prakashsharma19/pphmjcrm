@@ -612,6 +612,7 @@ University (most specific, if available)
 Country (if available)  
 email@domain.com
 
+
 Rules to Follow:
 
 1. Include the Department only if explicitly mentioned (e.g., Department of Chemistry or School of Engineering).
@@ -631,6 +632,7 @@ Rules to Follow:
 10. Remove unnecessary characters such as asterisks (**) and other formatting symbols from the formatted entries.
 11. Do not write "Department not provided" or "email not provided" or anything similar in the formatted entries.
 12. If any author has two emails mention both emails in the formatted entries.
+13. Author names should not be bold.
 
 Entries to format:
 {chunk}"""
