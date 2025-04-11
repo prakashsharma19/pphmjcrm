@@ -67,7 +67,11 @@ def init_session_state():
         'processing_start_time': None,
         'current_chunk': 0,
         'total_chunks': 0,
-        'is_admin': False
+        'is_admin': False,
+        'renaming_file': None,
+        'new_filename': "",
+        'moving_file': None,
+        'target_journal': ""
     }
     for key, default_value in session_vars.items():
         if key not in st.session_state:
@@ -582,6 +586,59 @@ def search_entries(query):
         st.error(f"Error searching entries: {str(e)}")
         return []
 
+# NEW JOURNAL MANAGEMENT FUNCTIONS
+def rename_file(journal, old_filename, new_filename):
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    try:
+        # Get the existing file data
+        doc_ref = db.collection("journals").document(journal).collection("files").document(old_filename)
+        doc = doc_ref.get()
+        
+        if not doc.exists:
+            return False
+            
+        file_data = doc.to_dict()
+        
+        # Create new document with the same data
+        db.collection("journals").document(journal).collection("files").document(new_filename).set(file_data)
+        
+        # Delete the old document
+        doc_ref.delete()
+        
+        return True
+    except Exception as e:
+        st.error(f"Error renaming file: {str(e)}")
+        return False
+
+def move_file(source_journal, filename, target_journal):
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    try:
+        # Get the existing file data
+        doc_ref = db.collection("journals").document(source_journal).collection("files").document(filename)
+        doc = doc_ref.get()
+        
+        if not doc.exists:
+            return False
+            
+        file_data = doc.to_dict()
+        
+        # Create new document in target journal
+        db.collection("journals").document(target_journal).collection("files").document(filename).set(file_data)
+        
+        # Delete the old document
+        doc_ref.delete()
+        
+        return True
+    except Exception as e:
+        st.error(f"Error moving file: {str(e)}")
+        return False
+
 # AI processing function with improved progress tracking
 def format_entries_chunked(text, status_text):
     if st.session_state.ai_status != "Connected":
@@ -612,24 +669,6 @@ University (most specific, if available)
 Country (if available)  
 email@domain.com
 
-These type of entries:
-
-**Lingli Zou**
-Student Affairs Department
-Hengyang Normal University
-China
-abcmuseum2016@163.com
-
-Should be:
-
-Lingli Zou
-Student Affairs Department
-Hengyang Normal University
-China
-abcmuseum2016@163.com
-
-(asterisk should not be in the entries)
-
 Rules to Follow:
 
 1. Include the Department only if explicitly mentioned (e.g., Department of Chemistry or School of Engineering).
@@ -646,10 +685,8 @@ Rules to Follow:
 7. Preserve proper capitalization, and avoid abbreviations unless officially part of the name.
 8. Never include duplicate information, address fragments, or unrelated affiliations.
 9. Take only "Corresponding authors at" address if given, in multiple address of single author.
-10. Remove unnecessary characters such as asterisks (**) and other formatting symbols to the formatted entries.
+10. Remove unnecessary characters such as asterisks (**) and other formatting symbols from the formatted entries.
 11. Do not write "Department not provided" or "email not provided" or anything similar in the formatted entries.
-12. If any author has two emails mention both emails in the formatted entries.
-13. Only unique entries should be there. Dont show any author entries twice.
 
 Entries to format:
 {chunk}"""
@@ -1342,6 +1379,8 @@ def show_entry_module():
         
         with tab1:
             st.subheader("Available Journals")
+            st.session_state.available_journals = get_available_journals()
+            
             if not st.session_state.available_journals:
                 st.info("No journals available. Create a new journal first.")
             else:
@@ -1356,7 +1395,7 @@ def show_entry_module():
                             try:
                                 expander = st.expander(f"{file['name']} ({file['entry_count']} entries)")
                                 with expander:
-                                    col1, col2, col3 = st.columns([3, 1, 1])
+                                    col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
                                     with col1:
                                         last_updated = file["last_updated"]
                                         if isinstance(last_updated, datetime):
@@ -1375,11 +1414,26 @@ def show_entry_module():
                                                 )
                                     
                                     with col3:
+                                        if st.button("✏️ Rename", key=f"rename_{i}"):
+                                            st.session_state.renaming_file = {
+                                                "journal": selected_journal,
+                                                "filename": file['name']
+                                            }
+                                            st.session_state.new_filename = file['name']
+                                    
+                                    with col4:
                                         if st.button("🗑️ Delete", key=f"del_file_{i}"):
                                             st.session_state.deleting_file = {
                                                 "journal": selected_journal,
                                                 "filename": file['name']
                                             }
+                                    
+                                    if st.button("➡️ Move to Another Journal", key=f"move_{i}"):
+                                        st.session_state.moving_file = {
+                                            "journal": selected_journal,
+                                            "filename": file['name']
+                                        }
+                                        st.session_state.target_journal = ""
                             except Exception as e:
                                 st.error(f"Error displaying file: {str(e)}")
                     else:
@@ -1395,6 +1449,7 @@ def show_entry_module():
                     if journal_name.strip():
                         if create_journal(journal_name):
                             st.success(f"Journal '{journal_name}' created successfully!")
+                            st.session_state.available_journals = get_available_journals()
                         else:
                             st.error("Failed to create journal")
                     else:
@@ -1424,9 +1479,51 @@ def show_entry_module():
                 if delete_file(file_info["journal"], file_info["filename"]):
                     st.success("File deleted successfully!")
                     st.session_state.deleting_file = None
+                    st.rerun()
         with col2:
             if st.button("Cancel"):
                 st.session_state.deleting_file = None
+
+    if st.session_state.renaming_file:
+        file_info = st.session_state.renaming_file
+        st.warning(f"Rename file '{file_info['filename']}' in {file_info['journal']}")
+        new_name = st.text_input("New filename:", value=st.session_state.new_filename)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Confirm Rename"):
+                if new_name.strip() and new_name != file_info['filename']:
+                    if rename_file(file_info["journal"], file_info["filename"], new_name):
+                        st.success("File renamed successfully!")
+                        st.session_state.renaming_file = None
+                        st.rerun()
+                else:
+                    st.warning("Please enter a new filename")
+        with col2:
+            if st.button("Cancel"):
+                st.session_state.renaming_file = None
+
+    if st.session_state.moving_file:
+        file_info = st.session_state.moving_file
+        st.warning(f"Move file '{file_info['filename']}' from {file_info['journal']} to another journal")
+        target_journal = st.selectbox(
+            "Select target journal:",
+            [j for j in st.session_state.available_journals if j != file_info["journal"]]
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Confirm Move"):
+                if target_journal:
+                    if move_file(file_info["journal"], file_info["filename"], target_journal):
+                        st.success("File moved successfully!")
+                        st.session_state.moving_file = None
+                        st.rerun()
+                else:
+                    st.warning("Please select a target journal")
+        with col2:
+            if st.button("Cancel"):
+                st.session_state.moving_file = None
 
 # Main app flow
 if __name__ == "__main__":
