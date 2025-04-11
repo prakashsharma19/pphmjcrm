@@ -649,7 +649,7 @@ Rules to Follow:
 10. Remove unnecessary characters such as asterisks (**) and other formatting symbols to the formatted entries.
 11. Do not write "Department not provided" or "email not provided" or anything similar in the formatted entries.
 12. If any author has two emails mention both emails in the formatted entries.
-13. Author names should not be bold.
+13. Only unique entries should be there. Dont show any author entries twice.
 
 Entries to format:
 {chunk}"""
