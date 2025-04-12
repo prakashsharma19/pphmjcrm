@@ -669,7 +669,6 @@ University (most specific, if available)
 Country (if available)  
 email@domain.com
 
-
 These type of entries:
 
 **Lingli Zou**
@@ -678,7 +677,7 @@ Hengyang Normal University
 China
 abcmuseum2016@163.com
 
-Formatted should be:
+Should be:
 
 Lingli Zou
 Student Affairs Department
