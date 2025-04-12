@@ -669,6 +669,25 @@ University (most specific, if available)
 Country (if available)  
 email@domain.com
 
+
+These type of entries:
+
+**Lingli Zou**
+Student Affairs Department
+Hengyang Normal University
+China
+abcmuseum2016@163.com
+
+Formatted should be:
+
+Lingli Zou
+Student Affairs Department
+Hengyang Normal University
+China
+abcmuseum2016@163.com
+
+(no asterisks should be in the formatted entries)
+
 Rules to Follow:
 
 1. Include the Department only if explicitly mentioned (e.g., Department of Chemistry or School of Engineering).
@@ -687,6 +706,7 @@ Rules to Follow:
 9. Take only "Corresponding authors at" address if given, in multiple address of single author.
 10. Remove unnecessary characters such as asterisks (**) and other formatting symbols from the formatted entries.
 11. Do not write "Department not provided" or "email not provided" or anything similar in the formatted entries.
+12. If any author has two emails, provide both emails in the formatted entries.
 
 Entries to format:
 {chunk}"""
