@@ -274,11 +274,26 @@ def save_entries_with_progress(entries, journal, filename, status_text):
         if not journal_ref.get().exists:
             journal_ref.set({"created": datetime.now()})
 
+        # Check for duplicates and get only unique entries
+        unique_entries, duplicates = check_duplicates(entries)
+        
+        if duplicates:
+            st.warning(f"Found {len(duplicates)} duplicate entries that will not be saved")
+            with st.expander("🔍 Duplicate Details"):
+                for key, dup_list in duplicates.items():
+                    name, email = extract_author_email(dup_list[0]["entry"])
+                    st.write(f"**Author:** {name} ({email})")
+                    st.write(f"- Found {len(dup_list)} duplicate(s)")
+        
+        if not unique_entries:
+            st.error("No unique entries to save!")
+            return False
+
         doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
         doc_ref.set({
-            "entries": entries,
+            "entries": unique_entries,
             "last_updated": datetime.now(),
-            "entry_count": len(entries)
+            "entry_count": len(unique_entries)
         })
         return True
     except Exception as e:
@@ -320,60 +335,84 @@ def get_available_journals():
         "Universal Journal of Mathematics and Mathematical Sciences"
     ] + all_journals)))
 
+def extract_author_email(entry):
+    """Extract author name and email from entry for duplicate detection"""
+    lines = entry.split('\n')
+    if len(lines) < 2:
+        return None, None
+    
+    # First line is name (remove "Professor" prefix if present)
+    name = lines[0].replace("Professor", "").strip()
+    email = lines[-1].strip()
+    
+    return name, email
+
 def check_duplicates(new_entries):
+    """Check for duplicates across all journals and return only unique entries"""
     unique_entries = []
     duplicate_info = {}
     db = get_firestore_db()
     if not db:
         return unique_entries, duplicate_info
         
+    # Create a dictionary to track the latest version of each author
     author_entries = {}
     
+    # First check existing entries in database
     for journal in db.collection("journals").stream():
         for file in db.collection("journals").document(journal.id).collection("files").stream():
             existing_entries = file.to_dict().get("entries", [])
             for existing_entry in existing_entries:
-                lines = existing_entry.split('\n')
-                if len(lines) >= 2:
-                    email = lines[-1].strip()
-                    if email:
-                        author_entries[email] = {
-                            "entry": existing_entry,
-                            "journal": journal.id,
-                            "filename": file.id,
-                            "timestamp": file.to_dict().get("last_updated", datetime.now())
-                        }
+                name, email = extract_author_email(existing_entry)
+                if name and email:
+                    key = f"{name.lower()}_{email.lower()}"
+                    author_entries[key] = {
+                        "entry": existing_entry,
+                        "journal": journal.id,
+                        "filename": file.id,
+                        "timestamp": file.to_dict().get("last_updated", datetime.now())
+                    }
     
+    # Now check new entries against existing ones
     for new_entry in new_entries:
-        lines = new_entry.split('\n')
-        if len(lines) >= 2:
-            email = lines[-1].strip()
-            if email in author_entries:
-                if email not in duplicate_info:
-                    duplicate_info[email] = []
-                duplicate_info[email].append({
-                    "entry": new_entry,
-                    "journal": "NEW_UPLOAD",
-                    "filename": "NEW_UPLOAD",
-                    "timestamp": datetime.now()
-                })
-            else:
-                unique_entries.append(new_entry)
-                author_entries[email] = {
-                    "entry": new_entry,
-                    "journal": "NEW_UPLOAD",
-                    "filename": "NEW_UPLOAD",
-                    "timestamp": datetime.now()
-                }
+        name, email = extract_author_email(new_entry)
+        if not name or not email:
+            continue  # Skip invalid entries
+            
+        key = f"{name.lower()}_{email.lower()}"
+        
+        if key in author_entries:
+            # This is a duplicate
+            if key not in duplicate_info:
+                duplicate_info[key] = []
+            duplicate_info[key].append({
+                "entry": new_entry,
+                "journal": "NEW_UPLOAD",
+                "filename": "NEW_UPLOAD",
+                "timestamp": datetime.now()
+            })
+            # Keep the existing entry (don't add to unique_entries)
+        else:
+            # This is a new unique entry
+            unique_entries.append(new_entry)
+            # Add to author_entries to check against subsequent new entries
+            author_entries[key] = {
+                "entry": new_entry,
+                "journal": "NEW_UPLOAD",
+                "filename": "NEW_UPLOAD",
+                "timestamp": datetime.now()
+            }
     
     return unique_entries, duplicate_info
 
 def delete_all_duplicates():
+    """Delete all duplicate entries across the system, keeping only the latest version of each"""
     db = get_firestore_db()
     if not db:
         return False, "Database connection failed"
     
     try:
+        # First collect all entries across all journals
         all_entries = {}
         journals_to_update = {}
         
@@ -392,45 +431,52 @@ def delete_all_duplicates():
                 }
                 
                 for entry in entries:
-                    lines = entry.split('\n')
-                    if len(lines) >= 2:
-                        email = lines[-1].strip()
-                        if email:
-                            if email not in all_entries:
-                                all_entries[email] = []
-                            all_entries[email].append({
-                                "entry": entry,
-                                "journal": journal_name,
-                                "filename": file_name,
-                                "timestamp": last_updated
-                            })
+                    name, email = extract_author_email(entry)
+                    if name and email:
+                        key = f"{name.lower()}_{email.lower()}"
+                        
+                        if key not in all_entries:
+                            all_entries[key] = []
+                            
+                        all_entries[key].append({
+                            "entry": entry,
+                            "journal": journal_name,
+                            "filename": file_name,
+                            "timestamp": last_updated
+                        })
         
+        # Now identify duplicates and keep only the latest version
         entries_to_keep = {}
         duplicates_found = 0
         
-        for email, entries in all_entries.items():
+        for key, entries in all_entries.items():
             if len(entries) > 1:
                 duplicates_found += len(entries) - 1
+                # Sort by timestamp (newest first)
                 sorted_entries = sorted(entries, key=lambda x: x["timestamp"], reverse=True)
-                entries_to_keep[email] = sorted_entries[0]
+                # Keep only the first (newest) entry
+                entries_to_keep[key] = sorted_entries[0]
             else:
-                entries_to_keep[email] = entries[0]
+                entries_to_keep[key] = entries[0]
         
         if duplicates_found == 0:
             return True, "No duplicates found"
         
+        # Now update all journals/files to remove duplicates
         for journal_name, files in journals_to_update.items():
             for file_name, file_data in files.items():
                 original_entries = file_data["entries"]
                 updated_entries = []
                 
                 for entry in original_entries:
-                    lines = entry.split('\n')
-                    if len(lines) >= 2:
-                        email = lines[-1].strip()
-                        if email in entries_to_keep and entries_to_keep[email]["entry"] == entry:
+                    name, email = extract_author_email(entry)
+                    if name and email:
+                        key = f"{name.lower()}_{email.lower()}"
+                        # Only keep if this is the version we're keeping
+                        if key in entries_to_keep and entries_to_keep[key]["entry"] == entry:
                             updated_entries.append(entry)
                 
+                # Update the file if entries changed
                 if len(updated_entries) != len(original_entries):
                     doc_ref = db.collection("journals").document(journal_name).collection("files").document(file_name)
                     doc_ref.update({
@@ -1294,8 +1340,9 @@ def show_entry_module():
                         if duplicates:
                             st.warning(f"Found {len(duplicates)} duplicate entries that will not be saved")
                             with st.expander("🔍 Duplicate Details"):
-                                for email, dup_list in duplicates.items():
-                                    st.write(f"**Email:** {email}")
+                                for key, dup_list in duplicates.items():
+                                    name, email = extract_author_email(dup_list[0]["entry"])
+                                    st.write(f"**Author:** {name} ({email})")
                                     st.write(f"- Found {len(dup_list)} duplicate(s)")
                         
                         st.session_state.entries = unique_entries
@@ -1357,14 +1404,16 @@ def show_entry_module():
                     
                     if result.get("is_file", False):
                         st.text(f"File: {result['filename']}")
-                        if st.button("📥 Download", key=f"dl_{i}"):
-                            content, entry_count = download_entries(result["journal"], result["filename"])
-                            if content:
-                                st.download_button(
-                                    "Download Now",
-                                    content,
-                                    f"{result['filename']} ({entry_count} entries).txt"
-                                )
+                        # Direct download without additional button
+                        content, entry_count = download_entries(result["journal"], result["filename"])
+                        if content:
+                            st.download_button(
+                                "📥 Download File",
+                                content,
+                                file_name=f"{result['filename']} ({entry_count} entries).txt",
+                                mime="text/plain",
+                                key=f"dl_{i}"
+                            )
                     else:
                         if st.session_state.current_edit_entry == result['entry']:
                             edited_entry = st.text_area("Edit entry:", value=result["entry"], height=150, key=f"edit_{i}")
@@ -1423,14 +1472,16 @@ def show_entry_module():
                                             st.write("Last updated: Unknown")
                                     
                                     with col2:
-                                        if st.button("📥 Download", key=f"dl_file_{i}"):
-                                            content, entry_count = download_entries(selected_journal, file['name'])
-                                            if content:
-                                                st.download_button(
-                                                    "Download Now",
-                                                    content,
-                                                    f"{file['name']} ({entry_count} entries).txt"
-                                                )
+                                        # Direct download without additional button
+                                        content, entry_count = download_entries(selected_journal, file['name'])
+                                        if content:
+                                            st.download_button(
+                                                "📥 Download",
+                                                content,
+                                                file_name=f"{file['name']} ({entry_count} entries).txt",
+                                                mime="text/plain",
+                                                key=f"dl_file_{i}"
+                                            )
                                     
                                     with col3:
                                         if st.button("✏️ Rename", key=f"rename_{i}"):
