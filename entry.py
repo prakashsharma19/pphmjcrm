@@ -50,7 +50,7 @@ def init_session_state():
         'cloud_error': '',
         'ai_error': '',
         'show_all_entries': False,
-        'manual_api_key': 'AIzaSyBIXgqTphaQq8u3W5A4HRHVhwBp_fbnfsg',
+        'manual_api_key': 'AIzaSyCiUe8rCj4Ik7zWWTJ3I0aRCV1P_af6Y7Y',
         'show_api_key_input': False,
         'delete_duplicates_mode': False,
         'show_connection_status': False,
