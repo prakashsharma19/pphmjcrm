@@ -3,7 +3,7 @@ import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, firestore
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO
 import time
 from difflib import SequenceMatcher
@@ -50,7 +50,7 @@ def init_session_state():
         'cloud_error': '',
         'ai_error': '',
         'show_all_entries': False,
-        'manual_api_key': 'AIzaSyCiUe8rCj4Ik7zWWTJ3I0aRCV1P_af6Y7Y',
+        'manual_api_key': 'AIzaSyBIXgqTphaQq8u3W5A4HRHVhwBp_fbnfsg',
         'show_api_key_input': False,
         'delete_duplicates_mode': False,
         'show_connection_status': False,
@@ -71,7 +71,10 @@ def init_session_state():
         'renaming_file': None,
         'new_filename': "",
         'moving_file': None,
-        'target_journal': ""
+        'target_journal': "",
+        'api_call_count': 0,
+        'last_api_call': None,
+        'manual_test_requested': False
     }
     for key, default_value in session_vars.items():
         if key not in st.session_state:
@@ -111,6 +114,25 @@ def process_uploaded_file(uploaded_file):
     except Exception as e:
         st.error(f"Error processing file: {str(e)}")
         return []
+
+def safe_api_call(func):
+    """Decorator to handle API calls safely with rate limiting"""
+    def wrapper(*args, **kwargs):
+        # Rate limiting check
+        if (st.session_state.last_api_call and 
+            (datetime.now() - st.session_state.last_api_call) < timedelta(seconds=2)):
+            st.warning("Please wait before making another API call")
+            return None
+            
+        try:
+            st.session_state.last_api_call = datetime.now()
+            result = func(*args, **kwargs)
+            st.session_state.api_call_count += 1
+            return result
+        except Exception as e:
+            st.error(f"API Error: {str(e)}")
+            return None
+    return wrapper
 
 # Regex processing functions
 def preprocess_with_regex(text):
@@ -511,6 +533,7 @@ def get_journal_files(journal):
         st.error(f"Error fetching files: {str(e)}")
         return []
 
+@safe_api_call
 def download_entries(journal, filename):
     db = get_firestore_db()
     if not db:
@@ -632,7 +655,6 @@ def search_entries(query):
         st.error(f"Error searching entries: {str(e)}")
         return []
 
-# NEW JOURNAL MANAGEMENT FUNCTIONS
 def rename_file(journal, old_filename, new_filename):
     db = get_firestore_db()
     if not db:
@@ -685,7 +707,7 @@ def move_file(source_journal, filename, target_journal):
         st.error(f"Error moving file: {str(e)}")
         return False
 
-# AI processing function with improved progress tracking
+@safe_api_call
 def format_entries_chunked(text, status_text):
     if st.session_state.ai_status != "Connected":
         st.error("AI service is not available")
@@ -715,24 +737,6 @@ University (most specific, if available)
 Country (if available)  
 email@domain.com
 
-These type of entries:
-
-**Lingli Zou**
-Student Affairs Department
-Hengyang Normal University
-China
-abcmuseum2016@163.com
-
-Should be:
-
-Lingli Zou
-Student Affairs Department
-Hengyang Normal University
-China
-abcmuseum2016@163.com
-
-(no asterisks should be in the formatted entries)
-
 Rules to Follow:
 
 1. Include the Department only if explicitly mentioned (e.g., Department of Chemistry or School of Engineering).
@@ -751,7 +755,6 @@ Rules to Follow:
 9. Take only "Corresponding authors at" address if given, in multiple address of single author.
 10. Remove unnecessary characters such as asterisks (**) and other formatting symbols from the formatted entries.
 11. Do not write "Department not provided" or "email not provided" or anything similar in the formatted entries.
-12. If any author has two emails, provide both emails in the formatted entries.
 
 Entries to format:
 {chunk}"""
@@ -790,7 +793,15 @@ Entries to format:
         try:
             genai.configure(api_key=st.session_state.manual_api_key or os.getenv("GOOGLE_API_KEY"))
             model = genai.GenerativeModel("gemini-1.5-flash-latest")
-            response = model.generate_content(best_prompt.format(chunk=chunk))
+            response = model.generate_content(
+                best_prompt.format(chunk=chunk),
+                safety_settings={
+                    'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE',
+                    'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE',
+                    'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE',
+                    'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE'
+                }
+            )
             if response.text:
                 formatted_parts.append(response.text)
         except Exception as e:
@@ -802,37 +813,47 @@ Entries to format:
     return '\n\n'.join(formatted_parts)
 
 def test_service_connections():
+    """Test both Cloud and AI connections with retries"""
     max_retries = 3
     retry_delay = 2
     
-    # Test AI
-    for attempt in range(max_retries):
-        try:
-            api_key = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
-            if not api_key:
+    # Only test AI if manually requested or if there's a key change
+    if st.session_state.get('manual_test_requested', False):
+        # Test AI
+        for attempt in range(max_retries):
+            try:
+                api_key = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
+                if not api_key:
+                    st.session_state.ai_status = "No API key"
+                    st.session_state.ai_error = "No API key provided"
+                    break
+                    
+                genai.configure(api_key=api_key)
+                # Use a very small, cheap test prompt
+                model = genai.GenerativeModel("gemini-1.5-flash-latest")
+                response = model.generate_content("Test", safety_settings={
+                    'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE',
+                    'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE',
+                    'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE',
+                    'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE'
+                })
+                if response.text:
+                    st.session_state.ai_status = "Connected"
+                    st.session_state.ai_error = ""
+                    break
+            except Exception as e:
                 st.session_state.ai_status = "Error"
-                st.session_state.ai_error = "No API key provided"
-                break
-                
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-1.5-flash-latest")
-            response = model.generate_content("Test connection")
-            if response.text:
-                st.session_state.ai_status = "Connected"
-                st.session_state.ai_error = ""
-                break
-        except Exception as e:
-            st.session_state.ai_status = "Error"
-            st.session_state.ai_error = str(e)
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay * (attempt + 1))
+                st.session_state.ai_error = str(e)
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
     
     # Test Cloud
     for attempt in range(max_retries):
         try:
             db = get_firestore_db()
             if db:
-                db.collection("test").document("test").get()
+                # Just check if we can access a small metadata document
+                db.collection("metadata").document("status").get()
                 st.session_state.cloud_status = "Connected"
                 st.session_state.cloud_error = ""
                 break
@@ -853,14 +874,16 @@ def initialize_services():
     API_KEY = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
     
     if not API_KEY:
-        st.session_state.ai_status = "Error"
+        st.session_state.ai_status = "No API key"
         st.session_state.ai_error = "No valid API key provided"
         st.session_state.show_api_key_input = True
         return False
 
     try:
         genai.configure(api_key=API_KEY)
-        st.session_state.ai_status = "Connected"
+        # Don't make actual API call here, just configure
+        st.session_state.ai_status = "Configured (not tested)"
+        return True
     except Exception as e:
         st.session_state.ai_status = "Error"
         st.session_state.ai_error = str(e)
@@ -869,9 +892,10 @@ def initialize_services():
 
     return initialize_firebase()
 
-# Check services status on startup
+# Check services status on startup - modified to not make API calls
 if st.session_state.cloud_status == 'Not checked' and st.session_state.ai_status == 'Not checked':
-    check_services_status()
+    st.session_state.cloud_status = "Not connected"
+    st.session_state.ai_status = "Not connected"
 
 services_initialized = initialize_services()
 
@@ -896,20 +920,25 @@ def show_connection_status():
                         height=100,
                         disabled=True)
         else:
-            st.warning("🔄 Cloud: Checking...")
+            st.warning("🔴 Cloud: Not connected")
         
         if st.session_state.ai_status == "Connected":
             st.success("✅ AI: Connected")
+        elif st.session_state.ai_status == "Configured (not tested)":
+            st.warning("🟡 AI: Configured (not tested)")
         elif st.session_state.ai_status == "Error":
             st.error("❌ AI: Error")
             st.text_area("AI Error Details",
                         value=st.session_state.ai_error,
                         height=100,
                         disabled=True)
+        elif st.session_state.ai_status == "No API key":
+            st.error("❌ AI: No API key")
         else:
-            st.warning("🔄 AI: Checking...")
+            st.warning("🔴 AI: Not connected")
         
-        if st.session_state.show_api_key_input or st.session_state.ai_status == "Error":
+        # Manual API key input
+        if st.session_state.show_api_key_input or st.session_state.ai_status in ["Error", "No API key"]:
             with st.expander("🔑 Enter Gemini API Key"):
                 st.session_state.manual_api_key = st.text_input(
                     "Gemini API Key:",
@@ -919,9 +948,15 @@ def show_connection_status():
                 if st.button("Save API Key"):
                     if st.session_state.manual_api_key:
                         try:
-                            genai.configure(api_key=st.session_state.manual_api_key)
-                            test_service_connections()
-                            st.rerun()
+                            # Just validate the key format, don't make an actual API call
+                            if len(st.session_state.manual_api_key) > 30:  # Basic format check
+                                genai.configure(api_key=st.session_state.manual_api_key)
+                                st.session_state.ai_status = "Configured (not tested)"
+                                st.session_state.ai_error = ""
+                                st.success("API key saved successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Invalid API key format")
                         except Exception as e:
                             st.error(f"Invalid API key: {str(e)}")
                     else:
@@ -930,13 +965,18 @@ def show_connection_status():
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🔄 Refresh"):
-                check_services_status()
                 st.rerun()
         with col2:
             if st.button("🧪 Test Connections"):
+                st.session_state.manual_test_requested = True
                 with st.spinner("Testing connections..."):
                     test_service_connections()
+                    st.session_state.manual_test_requested = False
                     st.rerun()
+        
+        # Show API call count
+        st.markdown("---")
+        st.metric("API Calls Made", st.session_state.api_call_count)
 
 def show_login_page():
     st.markdown("""
