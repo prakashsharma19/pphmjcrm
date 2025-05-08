@@ -732,6 +732,7 @@ Rules to Follow:
 9. Take only "Corresponding authors at" address if given, in multiple address of single author.
 10. Ensure there are no asterisks (**) or other unnecessary symbols in the resulted text. 
 11. Do not write "Department not provided" or "email not provided" or anything similar in the formatted entries.
+12. Do not merge or combine any entries. Separate each entry with a blank line. Only include entries in the result that contain at least one email address.
 
 Entries to format:
 {chunk}"""
