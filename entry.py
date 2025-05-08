@@ -726,8 +726,7 @@ Rules to Follow:
 	- Extra metadata like "View in Scopus", "Corresponding Author", "Authors at", etc.
 5. Format with exactly one component per line (Name, Department, University, Country, Email) and no blank lines.
 6. If multiple affiliations are given:
-	- Only include the Corresponding Author's affiliation if mentioned.
-	- If not specified, choose the most complete university-level address (one with department/school and university).
+	- For multiple affiliations, list each author’s full name, department, university, country, and email. Do not skip any authors, even if a corresponding author is marked.
 7. Preserve proper capitalization, and avoid abbreviations unless officially part of the name.
 8. Never include duplicate information, address fragments, or unrelated affiliations.
 9. Take only "Corresponding authors at" address if given, in multiple address of single author.
