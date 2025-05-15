@@ -71,7 +71,9 @@ def init_session_state():
         'renaming_file': None,
         'new_filename': "",
         'moving_file': None,
-        'target_journal': ""
+        'target_journal': "",
+        'last_activity_time': time.time(),
+        'deleting_journal': None
     }
     for key, default_value in session_vars.items():
         if key not in st.session_state:
@@ -552,6 +554,27 @@ def create_journal(journal_name):
         st.error(f"Error creating journal: {str(e)}")
         return False
 
+def delete_journal(journal_name):
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    try:
+        # First delete all files in the journal
+        files_ref = db.collection("journals").document(journal_name).collection("files")
+        for file in files_ref.stream():
+            file.reference.delete()
+        
+        # Then delete the journal itself
+        db.collection("journals").document(journal_name).delete()
+        
+        # Update available journals
+        st.session_state.available_journals = get_available_journals()
+        return True
+    except Exception as e:
+        st.error(f"Error deleting journal: {str(e)}")
+        return False
+
 def update_entry(journal, filename, old_entry, new_entry):
     db = get_firestore_db()
     if not db:
@@ -632,7 +655,6 @@ def search_entries(query):
         st.error(f"Error searching entries: {str(e)}")
         return []
 
-# NEW JOURNAL MANAGEMENT FUNCTIONS
 def rename_file(journal, old_filename, new_filename):
     db = get_firestore_db()
     if not db:
@@ -685,7 +707,7 @@ def move_file(source_journal, filename, target_journal):
         st.error(f"Error moving file: {str(e)}")
         return False
 
-# AI processing function with improved progress tracking
+# AI processing function with improved progress tracking and activity monitoring
 def format_entries_chunked(text, status_text):
     if st.session_state.ai_status != "Connected":
         st.error("AI service is not available")
@@ -726,7 +748,7 @@ Rules to Follow:
 	- Extra metadata like "View in Scopus", "Corresponding Author", "Authors at", etc.
 5. Format with exactly one component per line (Name, Department, University, Country, Email) and no blank lines.
 6. If multiple affiliations are given:
-	- For multiple affiliations, list each author’s full name, department, university, country, and email. Do not skip any authors, even if a corresponding author is marked.
+	- For multiple affiliations, list each author's full name, department, university, country, and email. Do not skip any authors, even if a corresponding author is marked.
 7. Preserve proper capitalization, and avoid abbreviations unless officially part of the name.
 8. Never include duplicate information, address fragments, or unrelated affiliations.
 9. Take only "Corresponding authors at" address if given, in multiple address of single author.
@@ -756,6 +778,9 @@ Entries to format:
         st.session_state.current_chunk = i + 1
         progress = int((i + 1) / len(chunks) * 100)
         progress_bar.progress(progress)
+        
+        # Update activity time to prevent timeout
+        st.session_state.last_activity_time = time.time()
         
         # Calculate estimated time remaining
         elapsed = time.time() - st.session_state.processing_start_time
@@ -1222,6 +1247,9 @@ def show_entry_module():
             show_prompt_manager()
             st.markdown("---")
 
+    # Update available journals list
+    st.session_state.available_journals = get_available_journals()
+
     st.session_state.app_mode = st.radio(
         "Select Operation",
         ["✏️ Create Entries", "📤 Upload Entries", "🔍 Search Database", "🗂 Manage Journals"],
@@ -1434,7 +1462,30 @@ def show_entry_module():
             if not st.session_state.available_journals:
                 st.info("No journals available. Create a new journal first.")
             else:
-                selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
+                for journal in st.session_state.available_journals:
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.write(f"📖 {journal}")
+                    with col2:
+                        if st.button("🗑️", key=f"del_journal_{journal}"):
+                            st.session_state.deleting_journal = journal
+                
+                if st.session_state.deleting_journal:
+                    st.warning(f"Are you sure you want to delete the journal '{st.session_state.deleting_journal}' and all its files?")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("Yes, Delete Journal"):
+                            if delete_journal(st.session_state.deleting_journal):
+                                st.success("Journal deleted successfully!")
+                                st.session_state.deleting_journal = None
+                                st.rerun()
+                    with col2:
+                        if st.button("Cancel"):
+                            st.session_state.deleting_journal = None
+                
+                st.markdown("---")
+                
+                selected_journal = st.selectbox("Select Journal to View Files:", st.session_state.available_journals)
                 
                 if selected_journal:
                     files = get_journal_files(selected_journal)
@@ -1579,6 +1630,10 @@ def show_entry_module():
 
 # Main app flow
 if __name__ == "__main__":
+    # Update last activity time periodically
+    if time.time() - st.session_state.last_activity_time > 30:
+        st.session_state.last_activity_time = time.time()
+    
     if not st.session_state.authenticated:
         show_login_page()
     else:
