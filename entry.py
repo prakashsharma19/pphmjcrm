@@ -745,7 +745,7 @@ Rules to Follow:
 4. Remove all the following:
 	- Postal codes, cities, buildings, room numbers, and internal unit codes.
 	- Lab names, centers, or research groups unless no department or school is present.
-	- Extra metadata like "View in Scopus", "Corresponding Author", "Authors at", etc.
+	- Extra metadata like "View in Scopus", "Corresponding Author", "Authors at", their educational degree like Dr, Phd, etc.
 5. Format with exactly one component per line (Name, Department, University, Country, Email) and no blank lines.
 6. If multiple affiliations are given:
 	- For multiple affiliations, list each author's full name, department, university, country, and email. Do not skip any authors, even if a corresponding author is marked.
