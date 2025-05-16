@@ -73,9 +73,7 @@ def init_session_state():
         'moving_file': None,
         'target_journal': "",
         'last_activity_time': time.time(),
-        'deleting_journal': None,
-        'saved_filename': "",
-        'saved_journal': ""
+        'deleting_journal': None
     }
     for key, default_value in session_vars.items():
         if key not in st.session_state:
@@ -83,33 +81,6 @@ def init_session_state():
 
 st.set_page_config(page_title="PPH CRM", layout="wide", initial_sidebar_state="expanded")
 init_session_state()
-
-# Journal abbreviations mapping
-JOURNAL_ABBREVIATIONS = {
-    "Computer Science and Artificial Intelligence": "CSAI",
-    "Advanced Studies in Artificial Intelligence": "ASAI",
-    "Advances in Computer Science and Engineering": "ACSE",
-    "Far East Journal of Experimental and Theoretical Artificial Intelligence": "FEJETAI",
-    "Advances and Applications in Fluid Mechanics": "AAFM",
-    "Advances in Fuzzy Sets and Systems": "AFSS",
-    "Far East Journal of Electronics and Communications": "FEJEC",
-    "Far East Journal of Mechanical Engineering and Physics": "FEJMEP",
-    "International Journal of Nutrition and Dietetics": "IJND",
-    "International Journal of Materials Engineering and Technology": "IJMET",
-    "JP Journal of Solids and Structures": "JPJSS",
-    "Advances and Applications in Discrete Mathematics": "AADM",
-    "Advances and Applications in Statistics": "AAS",
-    "Far East Journal of Applied Mathematics": "FEJAM",
-    "Far East Journal of Dynamical Systems": "FEJDS",
-    "Far East Journal of Mathematical Sciences (FJMS)": "FEJMS",
-    "Far East Journal of Theoretical Statistics": "FEJTS",
-    "JP Journal of Algebra, Number Theory and Applications": "JPJANTA",
-    "JP Journal of Biostatistics": "JPJB",
-    "JP Journal of Fixed Point Theory and Applications": "JPJFPTA",
-    "JP Journal of Heat and Mass Transfer": "JPJHMT",
-    "Surveys in Mathematics and Mathematical Sciences": "SMMS",
-    "Universal Journal of Mathematics and Mathematical Sciences": "UJMMS"
-}
 
 # Helper functions
 def format_time(seconds):
@@ -129,14 +100,8 @@ def get_suggested_filename(journal):
     """Generate a suggested filename based on journal name"""
     if not journal:
         return "entries.txt"
-    
-    # Get abbreviation or create one if not in mapping
-    abbreviation = JOURNAL_ABBREVIATIONS.get(journal, "".join([word[0] for word in journal.split() if word[0].isupper()]))
-    
-    # Format date as DD-MM-YYYY
-    date_str = datetime.now().strftime("%d-%m-%Y")
-    
-    return f"{abbreviation}_{date_str}.txt"
+    clean_name = re.sub(r'[^a-zA-Z0-9]', '_', journal)
+    return f"{clean_name}_{datetime.now().strftime('%Y%m%d')}.txt"
 
 def process_uploaded_file(uploaded_file):
     """Process uploaded file and return entries"""
@@ -312,7 +277,6 @@ def save_entries_with_progress(entries, journal, filename, status_text):
             journal_ref.set({"created": datetime.now()})
 
         # Check for duplicates and get only unique entries
-        status_text.text("Checking for duplicates...")
         unique_entries, duplicates = check_duplicates(entries)
         
         if duplicates:
@@ -327,38 +291,12 @@ def save_entries_with_progress(entries, journal, filename, status_text):
             st.error("No unique entries to save!")
             return False
 
-        # Save entries with progress
-        status_text.text("Saving entries to database...")
-        progress_bar = st.progress(0)
-        batch_size = 50
-        total_batches = math.ceil(len(unique_entries) / batch_size)
-        
         doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
-        batch = db.batch()
-        
-        for i in range(0, len(unique_entries), batch_size):
-            batch_entries = unique_entries[i:i + batch_size]
-            if i == 0:
-                batch.set(doc_ref, {
-                    "entries": batch_entries,
-                    "last_updated": datetime.now(),
-                    "entry_count": len(unique_entries)
-                })
-            else:
-                batch.update(doc_ref, {
-                    "entries": firestore.ArrayUnion(batch_entries)
-                })
-            
-            progress = int((i + batch_size) / len(unique_entries) * 100)
-            progress_bar.progress(min(progress, 100))
-            status_text.text(f"Saving entries... {progress}% complete")
-        
-        batch.commit()
-        
-        # Store saved file info for download
-        st.session_state.saved_filename = filename
-        st.session_state.saved_journal = journal
-        
+        doc_ref.set({
+            "entries": unique_entries,
+            "last_updated": datetime.now(),
+            "entry_count": len(unique_entries)
+        })
         return True
     except Exception as e:
         st.error(f"Error saving entries: {str(e)}")
@@ -1136,16 +1074,6 @@ def apply_theme_settings():
             background-color: #ffffff;
             border: 1px solid #ddd;
         }}
-        .journal-selector {{
-            display: flex;
-            align-items: center;
-        }}
-        .journal-name {{
-            flex-grow: 1;
-        }}
-        .delete-btn {{
-            margin-left: 10px;
-        }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -1330,17 +1258,7 @@ def show_entry_module():
 
     if st.session_state.app_mode == "✏️ Create Entries":
         st.header("✏️ Create Entries")
-        
-        # Add file upload option
-        tab1, tab2 = st.tabs(["Paste Entries", "Upload File"])
-        
-        with tab1:
-            raw_text = st.text_area("Paste author entries here (one entry per paragraph):", height=300)
-        
-        with tab2:
-            uploaded_file = st.file_uploader("Upload TXT file with author entries", type=["txt"])
-            if uploaded_file:
-                raw_text = uploaded_file.getvalue().decode("utf-8")
+        raw_text = st.text_area("Paste author entries here (one entry per paragraph):", height=300)
         
         if st.button("Format Entries"):
             if raw_text.strip():
@@ -1383,55 +1301,14 @@ def show_entry_module():
                 "formatted_entries.txt"
             )
             
-            # Custom selectbox with delete buttons
-            st.write("Select Journal:")
-            selected_journal = None
-            for journal in st.session_state.available_journals:
-                cols = st.columns([4, 1])
-                with cols[0]:
-                    if st.button(journal, key=f"journal_{journal}", use_container_width=True):
-                        selected_journal = journal
-                with cols[1]:
-                    if st.button("🗑️", key=f"del_{journal}"):
-                        st.session_state.deleting_journal = journal
-            
-            if st.session_state.deleting_journal:
-                st.warning(f"Are you sure you want to delete the journal '{st.session_state.deleting_journal}' and all its files?")
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("Yes, Delete Journal"):
-                        if delete_journal(st.session_state.deleting_journal):
-                            st.success("Journal deleted successfully!")
-                            st.session_state.deleting_journal = None
-                            st.rerun()
-                with col2:
-                    if st.button("Cancel"):
-                        st.session_state.deleting_journal = None
-            
+            selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
             filename = st.text_input("Filename:", get_suggested_filename(selected_journal))
             
             if st.button("Save to Database"):
-                if not selected_journal:
-                    st.error("Please select a journal")
-                elif not filename.strip():
-                    st.error("Please enter a filename")
-                else:
-                    status_text = st.empty()
-                    if save_entries_with_progress(st.session_state.entries, selected_journal, filename, status_text):
-                        st.success("Entries saved successfully!")
-                        st.session_state.show_save_section = False
-                        
-                        # Show download option for saved file
-                        st.markdown("---")
-                        st.subheader("Download Saved Entries")
-                        content, entry_count = download_entries(selected_journal, filename)
-                        if content:
-                            st.download_button(
-                                "📥 Download Saved File",
-                                content,
-                                file_name=f"{filename} ({entry_count} entries).txt",
-                                mime="text/plain"
-                            )
+                status_text = st.empty()
+                if save_entries_with_progress(st.session_state.entries, selected_journal, filename, status_text):
+                    st.success("Entries saved successfully!")
+                    st.session_state.show_save_section = False
 
     elif st.session_state.app_mode == "📤 Upload Entries":
         st.header("📤 Upload Entries")
@@ -1585,7 +1462,30 @@ def show_entry_module():
             if not st.session_state.available_journals:
                 st.info("No journals available. Create a new journal first.")
             else:
-                selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
+                for journal in st.session_state.available_journals:
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.write(f"📖 {journal}")
+                    with col2:
+                        if st.button("🗑️", key=f"del_journal_{journal}"):
+                            st.session_state.deleting_journal = journal
+                
+                if st.session_state.deleting_journal:
+                    st.warning(f"Are you sure you want to delete the journal '{st.session_state.deleting_journal}' and all its files?")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("Yes, Delete Journal"):
+                            if delete_journal(st.session_state.deleting_journal):
+                                st.success("Journal deleted successfully!")
+                                st.session_state.deleting_journal = None
+                                st.rerun()
+                    with col2:
+                        if st.button("Cancel"):
+                            st.session_state.deleting_journal = None
+                
+                st.markdown("---")
+                
+                selected_journal = st.selectbox("Select Journal to View Files:", st.session_state.available_journals)
                 
                 if selected_journal:
                     files = get_journal_files(selected_journal)
