@@ -756,6 +756,7 @@ Rules to Follow:
 11. Do not write "Department not provided" or "email not provided" or anything similar in the formatted entries.
 12. Do not merge or combine any entries. Separate each entry with a blank line. Only include entries in the result that contain at least one email address.
 13. Exclude all postal addresses; only author affiliation, country, and email are required.
+14. Convert UTF-8 texts into regular readable text.
 
 Entries to format:
 {chunk}"""
