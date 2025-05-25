@@ -302,7 +302,7 @@ def save_entries_with_progress(entries, journal, filename, status_text):
         
         # Save entries in chunks to show progress
         chunk_size = 50
-        total_chunks = math.ceil(len(unique_entries) / chunk_size
+        total_chunks = math.ceil(len(unique_entries) / chunk_size)
         
         for i in range(0, len(unique_entries), chunk_size):
             chunk = unique_entries[i:i + chunk_size]
