@@ -1762,7 +1762,7 @@ if __name__ == "__main__":
             if st.button("Logout"):
                 st.session_state.authenticated = False
                 st.session_state.username = ""
-                st.session_state.is_admin = False
+                st.session_state.is_admin = False 
                 st.session_state.current_module = None
                 st.rerun()
 
