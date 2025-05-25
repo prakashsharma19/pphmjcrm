@@ -73,7 +73,11 @@ def init_session_state():
         'moving_file': None,
         'target_journal': "",
         'last_activity_time': time.time(),
-        'deleting_journal': None
+        'deleting_journal': None,
+        'selected_file': None,
+        'saved_journal': "",
+        'saved_filename': "",
+        'show_download_option': False
     }
     for key, default_value in session_vars.items():
         if key not in st.session_state:
@@ -291,12 +295,57 @@ def save_entries_with_progress(entries, journal, filename, status_text):
             st.error("No unique entries to save!")
             return False
 
-        doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
-        doc_ref.set({
-            "entries": unique_entries,
-            "last_updated": datetime.now(),
-            "entry_count": len(unique_entries)
-        })
+        # Create progress bar and status text
+        progress_bar = st.progress(0)
+        status_text.text("Saving entries to database...")
+        start_time = time.time()
+        
+        # Save entries in chunks to show progress
+        chunk_size = 50
+        total_chunks = math.ceil(len(unique_entries) / chunk_size
+        
+        for i in range(0, len(unique_entries), chunk_size):
+            chunk = unique_entries[i:i + chunk_size]
+            
+            # Update progress
+            progress = int((i + chunk_size) / len(unique_entries) * 100)
+            progress_bar.progress(progress)
+            
+            # Calculate estimated time remaining
+            elapsed = time.time() - start_time
+            if i > 0:  # Only estimate after first chunk
+                avg_time_per_chunk = elapsed / (i / chunk_size + 1)
+                remaining_chunks = total_chunks - (i / chunk_size + 1)
+                estimated_remaining = avg_time_per_chunk * remaining_chunks
+                status_text.text(
+                    f"Saving entries... {progress}% complete. "
+                    f"Estimated time remaining: {format_time(estimated_remaining)}"
+                )
+            
+            # Save the chunk
+            doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
+            doc_data = {
+                "entries": unique_entries[:i + chunk_size],  # Save all entries up to this chunk
+                "last_updated": datetime.now(),
+                "entry_count": len(unique_entries[:i + chunk_size])
+            }
+            
+            if i == 0:
+                doc_ref.set(doc_data)
+            else:
+                doc_ref.update(doc_data)
+            
+            # Small delay to make progress visible
+            time.sleep(0.1)
+        
+        progress_bar.progress(100)
+        status_text.text(f"Successfully saved {len(unique_entries)} entries in {format_time(time.time() - start_time)}")
+        
+        # Store saved journal and filename for download option
+        st.session_state.saved_journal = journal
+        st.session_state.saved_filename = filename
+        st.session_state.show_download_option = True
+        
         return True
     except Exception as e:
         st.error(f"Error saving entries: {str(e)}")
@@ -1259,7 +1308,16 @@ def show_entry_module():
 
     if st.session_state.app_mode == "✏️ Create Entries":
         st.header("✏️ Create Entries")
-        raw_text = st.text_area("Paste author entries here (one entry per paragraph):", height=300)
+        
+        # File upload option
+        uploaded_file = st.file_uploader("Or upload a text file with entries:", type=["txt"])
+        if uploaded_file:
+            st.session_state.selected_file = uploaded_file.name
+            st.info(f"Selected file: {uploaded_file.name}")
+            raw_text = uploaded_file.getvalue().decode("utf-8")
+        else:
+            st.session_state.selected_file = None
+            raw_text = st.text_area("Paste author entries here (one entry per paragraph):", height=300)
         
         if st.button("Format Entries"):
             if raw_text.strip():
@@ -1310,6 +1368,17 @@ def show_entry_module():
                 if save_entries_with_progress(st.session_state.entries, selected_journal, filename, status_text):
                     st.success("Entries saved successfully!")
                     st.session_state.show_save_section = False
+                    
+                    # Show download option immediately after save
+                    if st.session_state.show_download_option:
+                        content, entry_count = download_entries(st.session_state.saved_journal, st.session_state.saved_filename)
+                        if content:
+                            st.download_button(
+                                "📥 Download Saved File",
+                                content,
+                                file_name=f"{st.session_state.saved_filename}",
+                                mime="text/plain"
+                            )
 
     elif st.session_state.app_mode == "📤 Upload Entries":
         st.header("📤 Upload Entries")
@@ -1382,6 +1451,17 @@ def show_entry_module():
                 ):
                     st.success("Unique entries saved successfully!")
                     st.session_state.show_save_section = False
+                    
+                    # Show download option immediately after save
+                    if st.session_state.show_download_option:
+                        content, entry_count = download_entries(st.session_state.saved_journal, st.session_state.saved_filename)
+                        if content:
+                            st.download_button(
+                                "📥 Download Saved File",
+                                content,
+                                file_name=f"{st.session_state.saved_filename}",
+                                mime="text/plain"
+                            )
 
     elif st.session_state.app_mode == "🔍 Search Database":
         st.header("🔍 Search Database")
@@ -1463,13 +1543,15 @@ def show_entry_module():
             if not st.session_state.available_journals:
                 st.info("No journals available. Create a new journal first.")
             else:
-                for journal in st.session_state.available_journals:
-                    col1, col2 = st.columns([4, 1])
-                    with col1:
-                        st.write(f"📖 {journal}")
-                    with col2:
-                        if st.button("🗑️", key=f"del_journal_{journal}"):
-                            st.session_state.deleting_journal = journal
+                # Collapsible journal list
+                with st.expander("📚 Show Journal List", expanded=False):
+                    for journal in st.session_state.available_journals:
+                        col1, col2 = st.columns([4, 1])
+                        with col1:
+                            st.write(f"📖 {journal}")
+                        with col2:
+                            if st.button("🗑️", key=f"del_journal_{journal}"):
+                                st.session_state.deleting_journal = journal
                 
                 if st.session_state.deleting_journal:
                     st.warning(f"Are you sure you want to delete the journal '{st.session_state.deleting_journal}' and all its files?")
