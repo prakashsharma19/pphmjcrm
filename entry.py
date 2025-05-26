@@ -1353,7 +1353,7 @@ def show_entry_module():
             
             if st.button("Save to Database"):
     status_text = st.empty()
-    if save_entries_with_progress(st.session_state.entries, selected_journal, filename, status_text):
+    	if save_entries_with_progress(st.session_state.entries, selected_journal, filename, status_text):
         st.success("Entries saved successfully!")
         
         # Show download button for the saved file
