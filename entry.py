@@ -305,7 +305,7 @@ def save_entries_with_progress(entries, journal, filename, status_text):
         total_entries = len(unique_entries)
         total_chunks = math.ceil(total_entries / chunk_size)
         
-        # First save all entries at once (more efficient for Firestore)
+        # Save all entries at once (more efficient)
         doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
         doc_ref.set({
             "entries": unique_entries,
@@ -313,22 +313,17 @@ def save_entries_with_progress(entries, journal, filename, status_text):
             "entry_count": total_entries
         })
         
-        # Simulate progress for UI
-        for i in range(0, total_entries + 1, chunk_size):
-            # Calculate progress (0-100)
-            progress = min(100, int((i / total_entries) * 100))
-            progress_bar.progress(progress)
-            
-            # Calculate estimated time remaining
+        # Simulate progress for UI feedback
+        for i in range(0, 101, 5):  # 0 to 100 in steps of 5
+            progress_bar.progress(i)
             elapsed = time.time() - start_time
             if i > 0:
-                estimated_total = (elapsed * total_entries) / i
+                estimated_total = (elapsed * 100) / i
                 estimated_remaining = estimated_total - elapsed
                 status_text.text(
-                    f"Saving entries... {progress}% complete. "
+                    f"Saving entries... {i}% complete. "
                     f"Estimated time remaining: {format_time(estimated_remaining)}"
                 )
-            
             time.sleep(0.1)  # Small delay to make progress visible
         
         progress_bar.progress(100)
@@ -1357,21 +1352,20 @@ def show_entry_module():
             filename = st.text_input("Filename:", get_suggested_filename(selected_journal))
             
             if st.button("Save to Database"):
-                status_text = st.empty()
-                if save_entries_with_progress(st.session_state.entries, selected_journal, filename, status_text):
-                    st.success("Entries saved successfully!")
-                    st.session_state.show_save_section = False
-                    
-                    # Show download option immediately after save
-                    if st.session_state.show_download_option:
-                        content, entry_count = download_entries(st.session_state.saved_journal, st.session_state.saved_filename)
-                        if content:
-                            st.download_button(
-                                "📥 Download Saved File",
-                                content,
-                                file_name=f"{st.session_state.saved_filename}",
-                                mime="text/plain"
-                            )
+    status_text = st.empty()
+    if save_entries_with_progress(st.session_state.entries, selected_journal, filename, status_text):
+        st.success("Entries saved successfully!")
+        
+        # Show download button for the saved file
+        if st.session_state.show_download_option:
+            content, entry_count = download_entries(st.session_state.saved_journal, st.session_state.saved_filename)
+            if content:
+                st.download_button(
+                    "📥 Download Saved File",
+                    data=content,
+                    file_name=st.session_state.saved_filename,
+                    mime="text/plain"
+                )
 
     elif st.session_state.app_mode == "📤 Upload Entries":
         st.header("📤 Upload Entries")
