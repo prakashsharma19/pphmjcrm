@@ -1347,25 +1347,24 @@ def show_entry_module():
                 entries_text,
                 "formatted_entries.txt"
             )
-            
             selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
             filename = st.text_input("Filename:", get_suggested_filename(selected_journal))
             
             if st.button("Save to Database"):
-    status_text = st.empty()
-    	if save_entries_with_progress(st.session_state.entries, selected_journal, filename, status_text):
-        st.success("Entries saved successfully!")
-        
-        # Show download button for the saved file
-        if st.session_state.show_download_option:
-            content, entry_count = download_entries(st.session_state.saved_journal, st.session_state.saved_filename)
-            if content:
-                st.download_button(
-                    "📥 Download Saved File",
-                    data=content,
-                    file_name=st.session_state.saved_filename,
-                    mime="text/plain"
-                )
+                status_text = st.empty()
+                if save_entries_with_progress(st.session_state.entries, selected_journal, filename, status_text):
+                    st.success("Entries saved successfully!")
+                    
+                    # Show download button for the saved file
+                    if st.session_state.show_download_option:
+                        content, entry_count = download_entries(st.session_state.saved_journal, st.session_state.saved_filename)
+                        if content:
+                            st.download_button(
+                                "📥 Download Saved File",
+                                data=content,
+                                file_name=st.session_state.saved_filename,
+                                mime="text/plain"
+                            )
 
     elif st.session_state.app_mode == "📤 Upload Entries":
         st.header("📤 Upload Entries")
