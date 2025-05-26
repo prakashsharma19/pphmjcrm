@@ -302,44 +302,37 @@ def save_entries_with_progress(entries, journal, filename, status_text):
         
         # Save entries in chunks to show progress
         chunk_size = 50
-        total_chunks = math.ceil(len(unique_entries) / chunk_size)
+        total_entries = len(unique_entries)
+        total_chunks = math.ceil(total_entries / chunk_size)
         
-        for i in range(0, len(unique_entries), chunk_size):
-            chunk = unique_entries[i:i + chunk_size]
-            
-            # Update progress
-            progress = int((i + chunk_size) / len(unique_entries) * 100)
+        # First save all entries at once (more efficient for Firestore)
+        doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
+        doc_ref.set({
+            "entries": unique_entries,
+            "last_updated": datetime.now(),
+            "entry_count": total_entries
+        })
+        
+        # Simulate progress for UI
+        for i in range(0, total_entries + 1, chunk_size):
+            # Calculate progress (0-100)
+            progress = min(100, int((i / total_entries) * 100))
             progress_bar.progress(progress)
             
             # Calculate estimated time remaining
             elapsed = time.time() - start_time
-            if i > 0:  # Only estimate after first chunk
-                avg_time_per_chunk = elapsed / (i / chunk_size + 1)
-                remaining_chunks = total_chunks - (i / chunk_size + 1)
-                estimated_remaining = avg_time_per_chunk * remaining_chunks
+            if i > 0:
+                estimated_total = (elapsed * total_entries) / i
+                estimated_remaining = estimated_total - elapsed
                 status_text.text(
                     f"Saving entries... {progress}% complete. "
                     f"Estimated time remaining: {format_time(estimated_remaining)}"
                 )
             
-            # Save the chunk
-            doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
-            doc_data = {
-                "entries": unique_entries[:i + chunk_size],  # Save all entries up to this chunk
-                "last_updated": datetime.now(),
-                "entry_count": len(unique_entries[:i + chunk_size])
-            }
-            
-            if i == 0:
-                doc_ref.set(doc_data)
-            else:
-                doc_ref.update(doc_data)
-            
-            # Small delay to make progress visible
-            time.sleep(0.1)
+            time.sleep(0.1)  # Small delay to make progress visible
         
         progress_bar.progress(100)
-        status_text.text(f"Successfully saved {len(unique_entries)} entries in {format_time(time.time() - start_time)}")
+        status_text.text(f"Successfully saved {total_entries} entries in {format_time(time.time() - start_time)}")
         
         # Store saved journal and filename for download option
         st.session_state.saved_journal = journal
