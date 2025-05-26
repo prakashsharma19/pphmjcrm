@@ -298,10 +298,11 @@ def save_entries_with_progress(entries, journal, filename, status_text):
         processed_count = 0
         duplicates_found = 0
         unique_entries = []
+        seen_in_batch = set()  # Track duplicates within this batch
         
         # Setup progress bar
         progress_bar = st.progress(0)
-        status_text.text("Checking for duplicates...")
+        status_text.text("Checking and saving entries...")
         
         # Process entries in batches
         batch_size = 50
@@ -320,18 +321,25 @@ def save_entries_with_progress(entries, journal, filename, status_text):
             if not name or not email:
                 continue  # Skip invalid entries
                 
-            # Check for duplicates using the optimized method
+            key = f"{name.lower()}_{email.lower()}"
+            
+            # First check within the current batch
+            if key in seen_in_batch:
+                duplicates_found += 1
+                continue
+                
+            # Then check against existing entries
             if is_duplicate(name, email):
                 duplicates_found += 1
                 continue
                 
             # Add to unique entries
+            seen_in_batch.add(key)
             unique_entries.append(entry)
             
             # Create author key
-            key = f"{name.lower()}_{email.lower()}"
-            author_key_ref = db.collection("author_keys").document(key)
-            author_keys_batch.set(author_key_ref, {
+            key_ref = db.collection("author_keys").document(key)
+            author_keys_batch.set(key_ref, {
                 "name": name,
                 "email": email,
                 "journal": journal,
@@ -349,9 +357,8 @@ def save_entries_with_progress(entries, journal, filename, status_text):
             # Update last activity to prevent timeout
             st.session_state.last_activity_time = time.time()
         
-        # Commit any remaining entries
+        # Save the entries to the journal file if we have any unique entries
         if len(unique_entries) > 0:
-            # Save the entries to the journal file
             doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
             batch.set(doc_ref, {
                 "entries": unique_entries,
@@ -376,14 +383,14 @@ def save_entries_with_progress(entries, journal, filename, status_text):
         return False
 
 def check_duplicates(new_entries):
-    """Check for duplicates across all journals and return only unique entries"""
+    """Check for duplicates both within the new batch and against existing entries"""
     unique_entries = []
     duplicate_info = {}
+    seen_in_batch = set()  # Track duplicates within the new batch
     
     # Initialize progress tracking
     total_entries = len(new_entries)
     processed_count = 0
-    duplicates_found = 0
     
     # Setup progress bar if in Streamlit context
     if 'progress' in globals() or 'progress' in locals():
@@ -396,7 +403,7 @@ def check_duplicates(new_entries):
         if 'progress_bar' in locals() and 'status_text' in locals():
             progress = int((i + 1) / total_entries * 100)
             progress_bar.progress(progress)
-            status_text.text(f"Processing {i+1}/{total_entries} ({progress}%) - {duplicates_found} duplicates found")
+            status_text.text(f"Processing {i+1}/{total_entries} ({progress}%) - {len(duplicate_info)} duplicates found")
         
         # Extract author info
         name, email = extract_author_email(entry)
@@ -406,29 +413,45 @@ def check_duplicates(new_entries):
             
         key = f"{name.lower()}_{email.lower()}"
         
-        # Check for duplicates using the optimized method
-        if is_duplicate(name, email):
+        # First check within the current batch
+        if key in seen_in_batch:
             if key not in duplicate_info:
                 duplicate_info[key] = []
             duplicate_info[key].append({
                 "entry": entry,
                 "journal": "NEW_UPLOAD",
                 "filename": "NEW_UPLOAD",
-                "timestamp": datetime.now()
+                "timestamp": datetime.now(),
+                "source": "current_batch"
             })
-            duplicates_found += 1
-        else:
-            # This is a new unique entry
-            unique_entries.append(entry)
+            continue
+            
+        # Then check against existing entries in database
+        if is_duplicate(name, email):
+            if key not in duplicate_info:
+                duplicate_info[key] = []
+            duplicate_info[key].append({
+                "entry": entry,
+                "journal": "EXISTING_ENTRY",
+                "filename": "EXISTING_ENTRY",
+                "timestamp": datetime.now(),
+                "source": "database"
+            })
+            continue
+            
+        # If not a duplicate, add to unique entries
+        seen_in_batch.add(key)
+        unique_entries.append(entry)
     
     # Complete progress if in Streamlit context
     if 'progress_bar' in locals() and 'status_text' in locals():
         progress_bar.progress(100)
-        if duplicates_found:
-            status_text.text(f"Completed! Found {len(unique_entries)} unique entries, {duplicates_found} duplicates")
+        if duplicate_info:
+            status_text.text(f"Completed! Found {len(unique_entries)} unique entries, {len(duplicate_info)} duplicates")
         else:
             status_text.text(f"Completed! Found {len(unique_entries)} unique entries")
     
+  
     return unique_entries, duplicate_info
 
 def delete_all_duplicates():
@@ -1439,15 +1462,12 @@ def show_entry_module():
                 if st.button("Process Uploaded Entries"):
                     with st.spinner("Checking for duplicates..."):
                         unique_entries, duplicates = check_duplicates(st.session_state.uploaded_entries)
+			    
+			st.session_state.duplicates_info = duplicates
                         
                         if duplicates:
                             st.warning(f"Found {len(duplicates)} duplicate entries that will not be saved")
-                            with st.expander("🔍 Duplicate Details"):
-                                for key, dup_list in duplicates.items():
-                                    name, email = extract_author_email(dup_list[0]["entry"])
-                                    st.write(f"**Author:** {name} ({email})")
-                                    st.write(f"- Found {len(dup_list)} duplicate(s)")
-                        
+                                                    
                         st.session_state.entries = unique_entries
                         st.success(f"{len(unique_entries)} unique entries ready to save")
                         st.session_state.show_save_section = True
