@@ -1253,7 +1253,7 @@ def show_entry_module():
 
     st.session_state.app_mode = st.radio(
         "Select Operation",
-        ["✏️ Create Entries", "📤 Upload Entries", "🔍 Search Database", "📋 Manage Journals"],
+        ["✏️ Create Entries", "📤 Upload Entries", "🔍 Search Database", "🗂 Manage Journals"],
         horizontal=True
     )
 
