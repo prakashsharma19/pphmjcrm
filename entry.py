@@ -54,7 +54,7 @@ def init_session_state():
         'show_api_key_input': False,
         'delete_duplicates_mode': False,
         'show_connection_status': False,
-        'app_mode': "?? Create Entries",
+        'app_mode': "📝 Create Entries",
         'show_formatted_entries': False,
         'regex_filters': [],
         'ai_prompts': [],
@@ -73,13 +73,16 @@ def init_session_state():
         'moving_file': None,
         'target_journal': "",
         'last_activity_time': time.time(),
-        'deleting_journal': None
+        'deleting_journal': None,
+        'save_progress': 0,
+        'save_status': "",
+        'converting_journal': None
     }
     for key, default_value in session_vars.items():
         if key not in st.session_state:
             st.session_state[key] = default_value
 
-st.set_page_config(page_title="PPH CRM - TESTING", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="PPH CRM", layout="wide", initial_sidebar_state="expanded")
 init_session_state()
 
 # Helper functions
@@ -266,41 +269,303 @@ def get_firestore_db():
         return None
     return firestore.client()
 
+def is_duplicate(name, email):
+    """Check if an author is already in the system using the author_keys collection"""
+    if not name or not email:
+        return False
+        
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    key = f"{name.lower()}_{email.lower()}"
+    doc = db.collection("author_keys").document(key).get()
+    return doc.exists
+
 def save_entries_with_progress(entries, journal, filename, status_text):
+    """Save entries with progress tracking and duplicate checking"""
     db = get_firestore_db()
     if not db:
         return False
         
     try:
+        # Create journal if it doesn't exist
         journal_ref = db.collection("journals").document(journal)
         if not journal_ref.get().exists:
             journal_ref.set({"created": datetime.now()})
 
-        # Check for duplicates and get only unique entries
-        unique_entries, duplicates = check_duplicates(entries)
+        # Initialize progress tracking
+        total_entries = len(entries)
+        processed_count = 0
+        duplicates_found = 0
+        unique_entries = []
         
-        if duplicates:
-            st.warning(f"Found {len(duplicates)} duplicate entries that will not be saved")
-            with st.expander("?? Duplicate Details"):
-                for key, dup_list in duplicates.items():
-                    name, email = extract_author_email(dup_list[0]["entry"])
-                    st.write(f"**Author:** {name} ({email})")
-                    st.write(f"- Found {len(dup_list)} duplicate(s)")
+        # Setup progress bar
+        progress_bar = st.progress(0)
+        status_text.text("Checking for duplicates...")
         
-        if not unique_entries:
-            st.error("No unique entries to save!")
-            return False
-
-        doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
-        doc_ref.set({
-            "entries": unique_entries,
-            "last_updated": datetime.now(),
-            "entry_count": len(unique_entries)
-        })
+        # Process entries in batches
+        batch_size = 50
+        batch = db.batch()
+        author_keys_batch = db.batch()
+        
+        for i, entry in enumerate(entries):
+            # Update progress
+            progress = int((i + 1) / total_entries * 100)
+            progress_bar.progress(progress)
+            status_text.text(f"Processing {i+1}/{total_entries} ({progress}%) - {duplicates_found} duplicates found")
+            
+            # Extract author info
+            name, email = extract_author_email(entry)
+            
+            if not name or not email:
+                continue  # Skip invalid entries
+                
+            # Check for duplicates using the optimized method
+            if is_duplicate(name, email):
+                duplicates_found += 1
+                continue
+                
+            # Add to unique entries
+            unique_entries.append(entry)
+            
+            # Create author key
+            key = f"{name.lower()}_{email.lower()}"
+            author_key_ref = db.collection("author_keys").document(key)
+            author_keys_batch.set(author_key_ref, {
+                "name": name,
+                "email": email,
+                "journal": journal,
+                "filename": filename,
+                "timestamp": datetime.now()
+            })
+            
+            # Commit batches periodically
+            if i > 0 and i % batch_size == 0:
+                batch.commit()
+                author_keys_batch.commit()
+                batch = db.batch()
+                author_keys_batch = db.batch()
+                
+            # Update last activity to prevent timeout
+            st.session_state.last_activity_time = time.time()
+        
+        # Commit any remaining entries
+        if len(unique_entries) > 0:
+            # Save the entries to the journal file
+            doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
+            batch.set(doc_ref, {
+                "entries": unique_entries,
+                "last_updated": datetime.now(),
+                "entry_count": len(unique_entries)
+            })
+            
+            batch.commit()
+            author_keys_batch.commit()
+        
+        progress_bar.progress(100)
+        
+        if duplicates_found:
+            status_text.text(f"Completed! Saved {len(unique_entries)} entries, skipped {duplicates_found} duplicates")
+        else:
+            status_text.text(f"Completed! Saved {len(unique_entries)} entries")
+            
         return True
+        
     except Exception as e:
         st.error(f"Error saving entries: {str(e)}")
         return False
+
+def check_duplicates(new_entries):
+    """Check for duplicates across all journals using author_keys collection"""
+    unique_entries = []
+    duplicate_info = {}
+    db = get_firestore_db()
+    
+    if not db:
+        return [], {}
+    
+    # Initialize progress tracking
+    total_entries = len(new_entries)
+    processed_count = 0
+    duplicates_found = 0
+    
+    # Setup progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    status_text.text("Checking for duplicates...")
+    
+    for i, entry in enumerate(new_entries):
+        # Update progress
+        progress = int((i + 1) / total_entries * 100)
+        progress_bar.progress(progress)
+        status_text.text(f"Processing {i+1}/{total_entries} ({progress}%) - {duplicates_found} duplicates found")
+        
+        # Extract author info
+        name, email = extract_author_email(entry)
+        
+        if not name or not email:
+            continue  # Skip invalid entries
+            
+        key = f"{name.lower()}_{email.lower()}"
+        
+        # Check for duplicates using the optimized method
+        if is_duplicate(name, email):
+            # Get existing duplicate info from author_keys
+            doc = db.collection("author_keys").document(key).get()
+            if doc.exists:
+                dup_data = doc.to_dict()
+                if key not in duplicate_info:
+                    duplicate_info[key] = []
+                duplicate_info[key].append({
+                    "entry": entry,
+                    "journal": dup_data.get("journal", "Unknown"),
+                    "filename": dup_data.get("filename", "Unknown"),
+                    "timestamp": dup_data.get("timestamp", datetime.now())
+                })
+            duplicates_found += 1
+        else:
+            # This is a new unique entry
+            unique_entries.append(entry)
+    
+    # Complete progress
+    progress_bar.progress(100)
+    if duplicates_found:
+        status_text.text(f"Completed! Found {len(unique_entries)} unique entries, {duplicates_found} duplicates")
+    else:
+        status_text.text(f"Completed! Found {len(unique_entries)} unique entries")
+    
+    return unique_entries, duplicate_info
+
+def convert_journal_to_author_keys(journal_name):
+    """Convert all entries in a journal to author_keys collection"""
+    db = get_firestore_db()
+    if not db:
+        return False, "Database connection failed"
+    
+    try:
+        # Get all files in the journal
+        files_ref = db.collection("journals").document(journal_name).collection("files")
+        files = [doc.id for doc in files_ref.stream()]
+        
+        if not files:
+            return False, f"No files found in journal '{journal_name}'"
+        
+        # Initialize progress
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        total_files = len(files)
+        processed_files = 0
+        total_entries_processed = 0
+        
+        # Process each file
+        for i, filename in enumerate(files):
+            status_text.text(f"Processing file {i+1}/{total_files}: {filename}")
+            progress_bar.progress(int((i + 1) / total_files * 50))  # First half for files
+            
+            # Get all entries in the file
+            doc = files_ref.document(filename).get()
+            if not doc.exists:
+                continue
+                
+            entries = doc.to_dict().get("entries", [])
+            batch = db.batch()
+            entries_processed = 0
+            
+            # Process each entry
+            for j, entry in enumerate(entries):
+                # Update progress within file
+                file_progress = int((j + 1) / len(entries) * 50) + 50  # Second half for entries
+                progress_bar.progress(file_progress)
+                status_text.text(
+                    f"Processing file {i+1}/{total_files}: {filename}\n"
+                    f"Entry {j+1}/{len(entries)} - Total processed: {total_entries_processed + j}"
+                )
+                
+                name, email = extract_author_email(entry)
+                if not name or not email:
+                    continue
+                    
+                # Create author key
+                key = f"{name.lower()}_{email.lower()}"
+                author_key_ref = db.collection("author_keys").document(key)
+                batch.set(author_key_ref, {
+                    "name": name,
+                    "email": email,
+                    "journal": journal_name,
+                    "filename": filename,
+                    "timestamp": datetime.now()
+                })
+                
+                entries_processed += 1
+                
+                # Commit in batches to avoid timeout
+                if j > 0 and j % 100 == 0:
+                    batch.commit()
+                    batch = db.batch()
+            
+            # Commit remaining entries in this file
+            batch.commit()
+            total_entries_processed += entries_processed
+            processed_files += 1
+            
+            # Update last activity to prevent timeout
+            st.session_state.last_activity_time = time.time()
+        
+        progress_bar.progress(100)
+        status_text.text(f"Completed! Processed {processed_files} files and {total_entries_processed} entries")
+        return True, f"Successfully converted {processed_files} files with {total_entries_processed} entries"
+    
+    except Exception as e:
+        return False, f"Error during conversion: {str(e)}"
+
+def delete_all_duplicates():
+    """Delete all duplicate entries across the system, keeping only the latest version of each"""
+    db = get_firestore_db()
+    if not db:
+        return False, "Database connection failed"
+    
+    try:
+        # First collect all author keys
+        author_keys_ref = db.collection("author_keys")
+        author_keys = {}
+        
+        # Get all author keys to identify duplicates
+        for doc in author_keys_ref.stream():
+            data = doc.to_dict()
+            key = doc.id
+            author_keys[key] = data
+        
+        # Identify duplicates (same key but different documents)
+        duplicates_to_remove = []
+        unique_authors = set()
+        
+        for key, data in author_keys.items():
+            if key in unique_authors:
+                duplicates_to_remove.append((key, data))
+            else:
+                unique_authors.add(key)
+        
+        if not duplicates_to_remove:
+            return True, "No duplicates found in author_keys collection"
+        
+        # Remove duplicates from author_keys
+        batch = db.batch()
+        for i, (key, data) in enumerate(duplicates_to_remove):
+            doc_ref = author_keys_ref.document(key)
+            batch.delete(doc_ref)
+            
+            # Commit in batches to avoid timeout
+            if i > 0 and i % 100 == 0:
+                batch.commit()
+                batch = db.batch()
+        
+        batch.commit()
+        
+        return True, f"Removed {len(duplicates_to_remove)} duplicate author keys"
+    
+    except Exception as e:
+        return False, f"Error during duplicate removal: {str(e)}"
 
 def get_available_journals():
     all_journals = []
@@ -349,149 +614,6 @@ def extract_author_email(entry):
     
     return name, email
 
-def check_duplicates(new_entries):
-    """Check for duplicates across all journals and return only unique entries"""
-    unique_entries = []
-    duplicate_info = {}
-    db = get_firestore_db()
-    if not db:
-        return unique_entries, duplicate_info
-        
-    # Create a dictionary to track the latest version of each author
-    author_entries = {}
-    
-    # First check existing entries in database
-    for journal in db.collection("journals").stream():
-        for file in db.collection("journals").document(journal.id).collection("files").stream():
-            existing_entries = file.to_dict().get("entries", [])
-            for existing_entry in existing_entries:
-                name, email = extract_author_email(existing_entry)
-                if name and email:
-                    key = f"{name.lower()}_{email.lower()}"
-                    author_entries[key] = {
-                        "entry": existing_entry,
-                        "journal": journal.id,
-                        "filename": file.id,
-                        "timestamp": file.to_dict().get("last_updated", datetime.now())
-                    }
-    
-    # Now check new entries against existing ones
-    for new_entry in new_entries:
-        name, email = extract_author_email(new_entry)
-        if not name or not email:
-            continue  # Skip invalid entries
-            
-        key = f"{name.lower()}_{email.lower()}"
-        
-        if key in author_entries:
-            # This is a duplicate
-            if key not in duplicate_info:
-                duplicate_info[key] = []
-            duplicate_info[key].append({
-                "entry": new_entry,
-                "journal": "NEW_UPLOAD",
-                "filename": "NEW_UPLOAD",
-                "timestamp": datetime.now()
-            })
-            # Keep the existing entry (don't add to unique_entries)
-        else:
-            # This is a new unique entry
-            unique_entries.append(new_entry)
-            # Add to author_entries to check against subsequent new entries
-            author_entries[key] = {
-                "entry": new_entry,
-                "journal": "NEW_UPLOAD",
-                "filename": "NEW_UPLOAD",
-                "timestamp": datetime.now()
-            }
-    
-    return unique_entries, duplicate_info
-
-def delete_all_duplicates():
-    """Delete all duplicate entries across the system, keeping only the latest version of each"""
-    db = get_firestore_db()
-    if not db:
-        return False, "Database connection failed"
-    
-    try:
-        # First collect all entries across all journals
-        all_entries = {}
-        journals_to_update = {}
-        
-        for journal in db.collection("journals").stream():
-            journal_name = journal.id
-            journals_to_update[journal_name] = {}
-            
-            for file in db.collection("journals").document(journal_name).collection("files").stream():
-                file_name = file.id
-                entries = file.to_dict().get("entries", [])
-                last_updated = file.to_dict().get("last_updated", datetime.now())
-                
-                journals_to_update[journal_name][file_name] = {
-                    "entries": entries,
-                    "last_updated": last_updated
-                }
-                
-                for entry in entries:
-                    name, email = extract_author_email(entry)
-                    if name and email:
-                        key = f"{name.lower()}_{email.lower()}"
-                        
-                        if key not in all_entries:
-                            all_entries[key] = []
-                            
-                        all_entries[key].append({
-                            "entry": entry,
-                            "journal": journal_name,
-                            "filename": file_name,
-                            "timestamp": last_updated
-                        })
-        
-        # Now identify duplicates and keep only the latest version
-        entries_to_keep = {}
-        duplicates_found = 0
-        
-        for key, entries in all_entries.items():
-            if len(entries) > 1:
-                duplicates_found += len(entries) - 1
-                # Sort by timestamp (newest first)
-                sorted_entries = sorted(entries, key=lambda x: x["timestamp"], reverse=True)
-                # Keep only the first (newest) entry
-                entries_to_keep[key] = sorted_entries[0]
-            else:
-                entries_to_keep[key] = entries[0]
-        
-        if duplicates_found == 0:
-            return True, "No duplicates found"
-        
-        # Now update all journals/files to remove duplicates
-        for journal_name, files in journals_to_update.items():
-            for file_name, file_data in files.items():
-                original_entries = file_data["entries"]
-                updated_entries = []
-                
-                for entry in original_entries:
-                    name, email = extract_author_email(entry)
-                    if name and email:
-                        key = f"{name.lower()}_{email.lower()}"
-                        # Only keep if this is the version we're keeping
-                        if key in entries_to_keep and entries_to_keep[key]["entry"] == entry:
-                            updated_entries.append(entry)
-                
-                # Update the file if entries changed
-                if len(updated_entries) != len(original_entries):
-                    doc_ref = db.collection("journals").document(journal_name).collection("files").document(file_name)
-                    doc_ref.update({
-                        "entries": updated_entries,
-                        "entry_count": len(updated_entries),
-                        "last_updated": datetime.now()
-                    })
-        
-        return True, f"Removed {duplicates_found} duplicate entries, keeping only the latest versions"
-    
-    except Exception as e:
-        return False, f"Error during duplicate removal: {str(e)}"
-
 def get_journal_files(journal):
     db = get_firestore_db()
     if not db or not journal:
@@ -535,6 +657,22 @@ def delete_file(journal, filename):
         return False
         
     try:
+        # First remove all author keys associated with this file
+        entries, _ = download_entries(journal, filename)
+        if entries:
+            entries_list = entries.split('\n\n')
+            batch = db.batch()
+            
+            for entry in entries_list:
+                name, email = extract_author_email(entry)
+                if name and email:
+                    key = f"{name.lower()}_{email.lower()}"
+                    doc_ref = db.collection("author_keys").document(key)
+                    batch.delete(doc_ref)
+            
+            batch.commit()
+        
+        # Then delete the file itself
         db.collection("journals").document(journal).collection("files").document(filename).delete()
         return True
     except Exception as e:
@@ -560,10 +698,10 @@ def delete_journal(journal_name):
         return False
         
     try:
-        # First delete all files in the journal
+        # First delete all files in the journal (which will handle author_keys)
         files_ref = db.collection("journals").document(journal_name).collection("files")
         for file in files_ref.stream():
-            file.reference.delete()
+            delete_file(journal_name, file.id)
         
         # Then delete the journal itself
         db.collection("journals").document(journal_name).delete()
@@ -586,6 +724,26 @@ def update_entry(journal, filename, old_entry, new_entry):
         if doc.exists:
             entries = doc.to_dict().get("entries", [])
             if old_entry in entries:
+                # First update the author key if name/email changed
+                old_name, old_email = extract_author_email(old_entry)
+                new_name, new_email = extract_author_email(new_entry)
+                
+                if old_name != new_name or old_email != new_email:
+                    # Delete old key
+                    old_key = f"{old_name.lower()}_{old_email.lower()}"
+                    db.collection("author_keys").document(old_key).delete()
+                    
+                    # Create new key
+                    new_key = f"{new_name.lower()}_{new_email.lower()}"
+                    db.collection("author_keys").document(new_key).set({
+                        "name": new_name,
+                        "email": new_email,
+                        "journal": journal,
+                        "filename": filename,
+                        "timestamp": datetime.now()
+                    })
+                
+                # Update the entry
                 entries[entries.index(old_entry)] = new_entry
                 doc_ref.update({
                     "entries": entries,
@@ -609,6 +767,13 @@ def delete_entry(journal, filename, entry):
         if doc.exists:
             entries = doc.to_dict().get("entries", [])
             if entry in entries:
+                # Remove from author_keys
+                name, email = extract_author_email(entry)
+                if name and email:
+                    key = f"{name.lower()}_{email.lower()}"
+                    db.collection("author_keys").document(key).delete()
+                
+                # Remove from entries
                 entries.remove(entry)
                 doc_ref.update({
                     "entries": entries,
@@ -695,6 +860,21 @@ def move_file(source_journal, filename, target_journal):
             return False
             
         file_data = doc.to_dict()
+        
+        # Update all author_keys to point to new journal
+        entries = file_data.get("entries", [])
+        batch = db.batch()
+        
+        for entry in entries:
+            name, email = extract_author_email(entry)
+            if name and email:
+                key = f"{name.lower()}_{email.lower()}"
+                key_ref = db.collection("author_keys").document(key)
+                batch.update(key_ref, {
+                    "journal": target_journal
+                })
+        
+        batch.commit()
         
         # Create new document in target journal
         db.collection("journals").document(target_journal).collection("files").document(filename).set(file_data)
@@ -894,37 +1074,37 @@ def load_logo():
 logo = load_logo()
 
 def show_connection_status():
-    with st.sidebar.expander("?? Connection Status", expanded=False):
+    with st.sidebar.expander("🔌 Connection Status", expanded=False):
         if st.session_state.cloud_status == "Connected":
-            st.success("? Cloud: Connected")
+            st.success("☁️ Cloud: Connected")
         elif st.session_state.cloud_status == "Error":
-            st.error("? Cloud: Error")
+            st.error("☁️ Cloud: Error")
             st.text_area("Cloud Error Details", 
                         value=st.session_state.cloud_error,
                         height=100,
                         disabled=True)
         else:
-            st.warning("?? Cloud: Checking...")
+            st.warning("🔃 Cloud: Checking...")
         
         if st.session_state.ai_status == "Connected":
-            st.success("? AI: Connected")
+            st.success("🤖 AI: Connected")
         elif st.session_state.ai_status == "Error":
-            st.error("? AI: Error")
+            st.error("🤖 AI: Error")
             st.text_area("AI Error Details",
                         value=st.session_state.ai_error,
                         height=100,
                         disabled=True)
         else:
-            st.warning("?? AI: Checking...")
+            st.warning("🔃 AI: Checking...")
         
         if st.session_state.show_api_key_input or st.session_state.ai_status == "Error":
-            with st.expander("?? Enter Gemini API Key"):
+            with st.expander("🔑 Enter Gemini API Key"):
                 st.session_state.manual_api_key = st.text_input(
                     "Gemini API Key:",
                     value=st.session_state.manual_api_key,
                     type="password"
                 )
-                if st.button("Save API Key"):
+                if st.button("💾 Save API Key"):
                     if st.session_state.manual_api_key:
                         try:
                             genai.configure(api_key=st.session_state.manual_api_key)
@@ -937,11 +1117,11 @@ def show_connection_status():
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("?? Refresh"):
+            if st.button("🔄 Refresh"):
                 check_services_status()
                 st.rerun()
         with col2:
-            if st.button("?? Test Connections"):
+            if st.button("🧪 Test Connections"):
                 with st.spinner("Testing connections..."):
                     test_service_connections()
                     st.rerun()
@@ -1125,19 +1305,19 @@ def show_main_menu():
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("?? Entry Module", use_container_width=True):
+        if st.button("📝 Entry Module", use_container_width=True):
             st.session_state.current_module = "Entry"
             st.rerun()
     
     with col2:
-        if st.button("??? PPH Office Tools", use_container_width=True):
+        if st.button("🛠️ PPH Office Tools", use_container_width=True):
             st.session_state.current_module = "PPH Office Tools"
             st.rerun()
     
     st.markdown('</div>', unsafe_allow_html=True)
 
 def show_regex_manager():
-    st.subheader("?? Regex Filter Management")
+    st.subheader("🔍 Regex Filter Management")
     st.write("Add patterns to automatically filter before AI processing")
     
     # Display current filters
@@ -1150,7 +1330,7 @@ def show_regex_manager():
             with col1:
                 st.code(pattern)
             with col2:
-                if st.button("???", key=f"del_regex_{i}"):
+                if st.button("🗑️", key=f"del_regex_{i}"):
                     if delete_regex_filter(pattern):
                         st.success("Filter deleted successfully!")
                         st.rerun()
@@ -1158,7 +1338,7 @@ def show_regex_manager():
     # Add new filter
     with st.form(key="add_regex_form"):
         new_filter = st.text_input("New Regex Pattern:", value=st.session_state.new_regex_filter)
-        if st.form_submit_button("Add Filter"):
+        if st.form_submit_button("➕ Add Filter"):
             if new_filter.strip():
                 if save_regex_filter(new_filter.strip()):
                     st.success("Filter added successfully!")
@@ -1168,7 +1348,7 @@ def show_regex_manager():
                     st.error("Failed to add filter")
 
 def show_prompt_manager():
-    st.subheader("?? AI Prompt Improvement")
+    st.subheader("🤖 AI Prompt Improvement")
     st.write("Add examples to improve the AI's formatting")
     
     # Display saved prompts
@@ -1177,7 +1357,7 @@ def show_prompt_manager():
         st.info("No AI prompts saved yet")
     else:
         for prompt in st.session_state.ai_prompts:
-            expander = st.expander(f"?? {prompt.get('name', 'Unnamed')}")
+            expander = st.expander(f"📝 {prompt.get('name', 'Unnamed')}")
             with expander:
                 col1, col2 = st.columns(2)
                 with col1:
@@ -1187,7 +1367,7 @@ def show_prompt_manager():
                     st.write("**Output:**")
                     st.text_area("", value=prompt.get("output", ""), height=150, disabled=True, key=f"output_{prompt['id']}")
                 
-                if st.button("??? Delete", key=f"delete_{prompt['id']}"):
+                if st.button("🗑️ Delete", key=f"delete_{prompt['id']}"):
                     if delete_ai_prompt(prompt['id']):
                         st.success("Prompt deleted successfully!")
                         st.rerun()
@@ -1202,7 +1382,7 @@ def show_prompt_manager():
         with col2:
             output_text = st.text_area("Formatted Output:", height=200, value=st.session_state.new_prompt_output)
         
-        if st.form_submit_button("Save Example"):
+        if st.form_submit_button("💾 Save Example"):
             if name.strip() and input_text.strip() and output_text.strip():
                 if save_ai_prompt(name.strip(), input_text.strip(), output_text.strip()):
                     st.success("Example saved successfully!")
@@ -1225,7 +1405,7 @@ def show_entry_module():
         if 'ai_prompts' not in st.session_state or not st.session_state.ai_prompts:
             st.session_state.ai_prompts = load_ai_prompts()
 
-    st.title("?? PPH CRM - Entry Module")
+    st.title("📝 PPH CRM - Entry Module")
     
     if logo:
         st.image(logo, width=100)
@@ -1234,10 +1414,10 @@ def show_entry_module():
     if st.session_state.is_admin:
         admin_col1, admin_col2 = st.columns(2)
         with admin_col1:
-            if st.button("?? Manage Regex Filters"):
+            if st.button("🔍 Manage Regex Filters"):
                 st.session_state.show_regex_manager = not st.session_state.show_regex_manager
         with admin_col2:
-            if st.button("?? Improve AI Prompts"):
+            if st.button("🤖 Improve AI Prompts"):
                 st.session_state.show_prompt_manager = not st.session_state.show_prompt_manager
         
         if st.session_state.show_regex_manager:
@@ -1253,15 +1433,15 @@ def show_entry_module():
 
     st.session_state.app_mode = st.radio(
         "Select Operation",
-        ["?? Create Entries", "?? Upload Entries", "?? Search Database", "?? Manage Journals"],
+        ["📝 Create Entries", "📤 Upload Entries", "🔍 Search Database", "📚 Manage Journals"],
         horizontal=True
     )
 
-    if st.session_state.app_mode == "?? Create Entries":
-        st.header("?? Create Entries")
+    if st.session_state.app_mode == "📝 Create Entries":
+        st.header("📝 Create Entries")
         raw_text = st.text_area("Paste author entries here (one entry per paragraph):", height=300)
         
-        if st.button("Format Entries"):
+        if st.button("✨ Format Entries"):
             if raw_text.strip():
                 status_text = st.empty()
                 formatted = format_entries_chunked(raw_text, status_text)
@@ -1273,7 +1453,7 @@ def show_entry_module():
         if st.session_state.get('show_save_section', False) and st.session_state.entries:
             st.subheader("Formatted Entries")
             
-            if st.button("Show Formatted Entries"):
+            if st.button("👁️ Show Formatted Entries"):
                 st.session_state.show_formatted_entries = not st.session_state.show_formatted_entries
             
             if st.session_state.show_formatted_entries:
@@ -1282,14 +1462,14 @@ def show_entry_module():
                     st.text_area("", value=entry, height=150, disabled=True, key=f"entry_{i}")
                 
                 if len(st.session_state.entries) > 30:
-                    if st.button("Show All Entries"):
+                    if st.button("📜 Show All Entries"):
                         st.session_state.show_all_entries = True
                         st.rerun()
                     
-                    if st.button("Download All Entries"):
+                    if st.button("💾 Download All Entries"):
                         entries_text = "\n\n".join(st.session_state.entries)
                         st.download_button(
-                            label="Download Now",
+                            label="📥 Download Now",
                             data=entries_text,
                             file_name="formatted_entries.txt",
                             mime="text/plain"
@@ -1297,7 +1477,7 @@ def show_entry_module():
             
             entries_text = "\n\n".join(st.session_state.entries)
             st.download_button(
-                "Download All Entries",
+                "💾 Download All Entries",
                 entries_text,
                 "formatted_entries.txt"
             )
@@ -1305,16 +1485,16 @@ def show_entry_module():
             selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
             filename = st.text_input("Filename:", get_suggested_filename(selected_journal))
             
-            if st.button("Save to Database"):
+            if st.button("💾 Save to Database"):
                 status_text = st.empty()
                 if save_entries_with_progress(st.session_state.entries, selected_journal, filename, status_text):
                     st.success("Entries saved successfully!")
                     st.session_state.show_save_section = False
 
-    elif st.session_state.app_mode == "?? Upload Entries":
-        st.header("?? Upload Entries")
+    elif st.session_state.app_mode == "📤 Upload Entries":
+        st.header("📤 Upload Entries")
         
-        if st.button("? Delete Duplicate Entries", type="primary", help="Remove all duplicate entries from the entire system"):
+        if st.button("⚠️ Delete Duplicate Entries", type="primary", help="Remove all duplicate entries from the entire system"):
             st.session_state.delete_duplicates_mode = True
         
         if st.session_state.delete_duplicates_mode:
@@ -1326,7 +1506,7 @@ def show_entry_module():
                     st.error(message)
                 st.session_state.delete_duplicates_mode = False
         
-        uploaded_file = st.file_uploader("Upload TXT file with author entries", type=["txt"])
+        uploaded_file = st.file_uploader("📄 Upload TXT file with author entries", type=["txt"])
         
         if uploaded_file:
             st.session_state.upload_journal = st.selectbox(
@@ -1344,17 +1524,30 @@ def show_entry_module():
                 st.session_state.uploaded_entries = uploaded_entries
                 st.success(f"Found {len(uploaded_entries)} raw entries in file")
                 
-                if st.button("Process Uploaded Entries"):
+                if st.button("🔍 Process Uploaded Entries"):
                     with st.spinner("Checking for duplicates..."):
                         unique_entries, duplicates = check_duplicates(st.session_state.uploaded_entries)
                         
                         if duplicates:
                             st.warning(f"Found {len(duplicates)} duplicate entries that will not be saved")
-                            with st.expander("?? Duplicate Details"):
+                            with st.expander("🔍 Duplicate Details"):
                                 for key, dup_list in duplicates.items():
                                     name, email = extract_author_email(dup_list[0]["entry"])
                                     st.write(f"**Author:** {name} ({email})")
-                                    st.write(f"- Found {len(dup_list)} duplicate(s)")
+                                    st.write(f"- Found in: {dup_list[0]['journal']} > {dup_list[0]['filename']}")
+                                    st.write(f"- Original entry date: {dup_list[0]['timestamp'].strftime('%d-%b-%Y') if isinstance(dup_list[0]['timestamp'], datetime) else 'Unknown'}")
+                                    st.write(f"- Number of duplicates: {len(dup_list)}")
+                                    
+                                    if st.button("👁️ View Original Entry", key=f"view_{key}"):
+                                        original_content, _ = download_entries(dup_list[0]['journal'], dup_list[0]['filename'])
+                                        if original_content:
+                                            original_entries = original_content.split('\n\n')
+                                            for orig_entry in original_entries:
+                                                if name in orig_entry and email in orig_entry:
+                                                    st.text_area("Original Entry:", value=orig_entry, height=150, disabled=True)
+                                                    break
+                                    
+                                    st.markdown("---")
                         
                         st.session_state.entries = unique_entries
                         st.success(f"{len(unique_entries)} unique entries ready to save")
@@ -1364,15 +1557,15 @@ def show_entry_module():
             st.subheader("Processed Entries")
             st.info(f"Total unique entries ready to save: {len(st.session_state.entries)}")
             
-            if st.button("Download Unique Entries"):
+            if st.button("💾 Download Unique Entries"):
                 entries_text = "\n\n".join(st.session_state.entries)
                 st.download_button(
-                    "Download Now",
+                    "📥 Download Now",
                     entries_text,
                     f"{st.session_state.upload_filename}_unique_entries.txt"
                 )
             
-            if st.button("Save to Database"):
+            if st.button("💾 Save to Database"):
                 status_text = st.empty()
                 if save_entries_with_progress(
                     st.session_state.entries,
@@ -1383,13 +1576,13 @@ def show_entry_module():
                     st.success("Unique entries saved successfully!")
                     st.session_state.show_save_section = False
 
-    elif st.session_state.app_mode == "?? Search Database":
-        st.header("?? Search Database")
+    elif st.session_state.app_mode == "🔍 Search Database":
+        st.header("🔍 Search Database")
         search_col1, search_col2 = st.columns([3, 1])
         with search_col1:
             search_query = st.text_input("Search for entries or filenames:", value=st.session_state.search_query)
         with search_col2:
-            if st.button("Search"):
+            if st.button("🔍 Search"):
                 if get_firestore_db():
                     st.session_state.search_query = search_query
                     st.session_state.search_results = search_entries(search_query)
@@ -1419,7 +1612,7 @@ def show_entry_module():
                         content, entry_count = download_entries(result["journal"], result["filename"])
                         if content:
                             st.download_button(
-                                "?? Download File",
+                                "📥 Download File",
                                 content,
                                 file_name=f"{result['filename']} ({entry_count} entries).txt",
                                 mime="text/plain",
@@ -1431,28 +1624,28 @@ def show_entry_module():
                             
                             col1, col2 = st.columns(2)
                             with col1:
-                                if st.button("Save", key=f"save_{i}"):
+                                if st.button("💾 Save", key=f"save_{i}"):
                                     if update_entry(result["journal"], result["filename"], result["entry"], edited_entry):
                                         st.success("Entry updated successfully!")
                                         st.session_state.current_edit_entry = None
                                         st.session_state.search_results = search_entries(st.session_state.search_query)
                             with col2:
-                                if st.button("Cancel", key=f"cancel_{i}"):
+                                if st.button("❌ Cancel", key=f"cancel_{i}"):
                                     st.session_state.current_edit_entry = None
                         else:
                             st.text_area("Entry:", value=result["entry"], height=150, key=f"view_{i}", disabled=True)
                     
                     col1, col2 = st.columns([1, 1])
                     with col1:
-                        if not result.get("is_file", False) and st.button("?? Edit", key=f"edit_btn_{i}"):
+                        if not result.get("is_file", False) and st.button("✏️ Edit", key=f"edit_btn_{i}"):
                             st.session_state.current_edit_entry = result['entry']
                     with col2:
-                        if not result.get("is_file", False) and st.button("??? Delete", key=f"delete_{i}"):
+                        if not result.get("is_file", False) and st.button("🗑️ Delete", key=f"delete_{i}"):
                             st.session_state.deleting_entry = result
                     st.markdown("---")
 
-    elif st.session_state.app_mode == "?? Manage Journals":
-        st.header("?? Manage Journals")
+    elif st.session_state.app_mode == "📚 Manage Journals":
+        st.header("📚 Manage Journals")
         
         tab1, tab2 = st.tabs(["View Journals", "Create New Journal"])
         
@@ -1464,24 +1657,44 @@ def show_entry_module():
                 st.info("No journals available. Create a new journal first.")
             else:
                 for journal in st.session_state.available_journals:
-                    col1, col2 = st.columns([4, 1])
+                    col1, col2, col3 = st.columns([4, 1, 1])
                     with col1:
-                        st.write(f"?? {journal}")
+                        st.write(f"📖 {journal}")
                     with col2:
-                        if st.button("???", key=f"del_journal_{journal}"):
+                        if st.button("🔄 Convert", key=f"convert_{journal}"):
+                            st.session_state.converting_journal = journal
+                    with col3:
+                        if st.button("🗑️", key=f"del_journal_{journal}"):
                             st.session_state.deleting_journal = journal
+                
+                if st.session_state.converting_journal:
+                    st.warning(f"Convert all entries in '{st.session_state.converting_journal}' to author_keys collection?")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("✅ Yes, Convert"):
+                            with st.spinner(f"Converting {st.session_state.converting_journal}..."):
+                                success, message = convert_journal_to_author_keys(st.session_state.converting_journal)
+                                if success:
+                                    st.success(message)
+                                else:
+                                    st.error(message)
+                                st.session_state.converting_journal = None
+                                st.rerun()
+                    with col2:
+                        if st.button("❌ Cancel"):
+                            st.session_state.converting_journal = None
                 
                 if st.session_state.deleting_journal:
                     st.warning(f"Are you sure you want to delete the journal '{st.session_state.deleting_journal}' and all its files?")
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.button("Yes, Delete Journal"):
+                        if st.button("✅ Yes, Delete"):
                             if delete_journal(st.session_state.deleting_journal):
                                 st.success("Journal deleted successfully!")
                                 st.session_state.deleting_journal = None
                                 st.rerun()
                     with col2:
-                        if st.button("Cancel"):
+                        if st.button("❌ Cancel"):
                             st.session_state.deleting_journal = None
                 
                 st.markdown("---")
@@ -1510,7 +1723,7 @@ def show_entry_module():
                                         content, entry_count = download_entries(selected_journal, file['name'])
                                         if content:
                                             st.download_button(
-                                                "?? Download",
+                                                "📥 Download",
                                                 content,
                                                 file_name=f"{file['name']} ({entry_count} entries).txt",
                                                 mime="text/plain",
@@ -1518,7 +1731,7 @@ def show_entry_module():
                                             )
                                     
                                     with col3:
-                                        if st.button("?? Rename", key=f"rename_{i}"):
+                                        if st.button("✏️ Rename", key=f"rename_{i}"):
                                             st.session_state.renaming_file = {
                                                 "journal": selected_journal,
                                                 "filename": file['name']
@@ -1526,13 +1739,13 @@ def show_entry_module():
                                             st.session_state.new_filename = file['name']
                                     
                                     with col4:
-                                        if st.button("??? Delete", key=f"del_file_{i}"):
+                                        if st.button("🗑️ Delete", key=f"del_file_{i}"):
                                             st.session_state.deleting_file = {
                                                 "journal": selected_journal,
                                                 "filename": file['name']
                                             }
                                     
-                                    if st.button("?? Move to Another Journal", key=f"move_{i}"):
+                                    if st.button("➡️ Move to Another Journal", key=f"move_{i}"):
                                         st.session_state.moving_file = {
                                             "journal": selected_journal,
                                             "filename": file['name']
@@ -1544,10 +1757,10 @@ def show_entry_module():
                         st.info(f"No files yet in {selected_journal}")
         
         with tab2:
-            st.subheader("Create New Journal")
+            st.subheader("➕ Create New Journal")
             with st.form(key="new_journal_form"):
                 journal_name = st.text_input("Journal Name:")
-                submit_button = st.form_submit_button("Create Journal")
+                submit_button = st.form_submit_button("➕ Create Journal")
                 
                 if submit_button:
                     if journal_name.strip():
@@ -1565,13 +1778,13 @@ def show_entry_module():
         st.warning(f"Are you sure you want to delete this entry from {result['full_path']}?")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Confirm Delete"):
+            if st.button("✅ Confirm Delete"):
                 if delete_entry(result["journal"], result["filename"], result["entry"]):
                     st.success("Entry deleted successfully!")
                     st.session_state.deleting_entry = None
                     st.session_state.search_results = search_entries(st.session_state.search_query)
         with col2:
-            if st.button("Cancel"):
+            if st.button("❌ Cancel"):
                 st.session_state.deleting_entry = None
 
     if st.session_state.deleting_file:
@@ -1579,13 +1792,13 @@ def show_entry_module():
         st.warning(f"Are you sure you want to delete '{file_info['filename']}' from {file_info['journal']}?")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Yes, Delete"):
+            if st.button("✅ Yes, Delete"):
                 if delete_file(file_info["journal"], file_info["filename"]):
                     st.success("File deleted successfully!")
                     st.session_state.deleting_file = None
                     st.rerun()
         with col2:
-            if st.button("Cancel"):
+            if st.button("❌ Cancel"):
                 st.session_state.deleting_file = None
 
     if st.session_state.renaming_file:
@@ -1595,7 +1808,7 @@ def show_entry_module():
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Confirm Rename"):
+            if st.button("✅ Confirm Rename"):
                 if new_name.strip() and new_name != file_info['filename']:
                     if rename_file(file_info["journal"], file_info["filename"], new_name):
                         st.success("File renamed successfully!")
@@ -1604,7 +1817,7 @@ def show_entry_module():
                 else:
                     st.warning("Please enter a new filename")
         with col2:
-            if st.button("Cancel"):
+            if st.button("❌ Cancel"):
                 st.session_state.renaming_file = None
 
     if st.session_state.moving_file:
@@ -1617,7 +1830,7 @@ def show_entry_module():
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Confirm Move"):
+            if st.button("✅ Confirm Move"):
                 if target_journal:
                     if move_file(file_info["journal"], file_info["filename"], target_journal):
                         st.success("File moved successfully!")
@@ -1626,7 +1839,7 @@ def show_entry_module():
                 else:
                     st.warning("Please select a target journal")
         with col2:
-            if st.button("Cancel"):
+            if st.button("❌ Cancel"):
                 st.session_state.moving_file = None
 
 # Main app flow
@@ -1645,13 +1858,13 @@ if __name__ == "__main__":
             
             st.markdown("---")
             
-            if st.button("?? Home"):
+            if st.button("🏠 Home"):
                 st.session_state.current_module = None
                 st.rerun()
             
             st.markdown("---")
             
-            expander = st.expander("?? Settings", expanded=False)
+            expander = st.expander("⚙️ Settings", expanded=False)
             with expander:
                 st.subheader("Appearance")
                 new_font_size = st.selectbox(
@@ -1666,7 +1879,7 @@ if __name__ == "__main__":
                     index=["Light", "Dark"].index(st.session_state.theme)
                 )
                 
-                if st.button("Save Settings"):
+                if st.button("💾 Save Settings"):
                     st.session_state.font_size = new_font_size
                     st.session_state.theme = new_theme
                     st.session_state.bg_color = "#ffffff" if new_theme == "Light" else "#1a1a1a"
@@ -1677,7 +1890,7 @@ if __name__ == "__main__":
             st.markdown("---")
             st.markdown(f"Logged in as: **{st.session_state.username}**")
             
-            if st.button("Logout"):
+            if st.button("🚪 Logout"):
                 st.session_state.authenticated = False
                 st.session_state.username = ""
                 st.session_state.is_admin = False
@@ -1689,7 +1902,7 @@ if __name__ == "__main__":
         elif st.session_state.current_module == "Entry":
             show_entry_module()
         elif st.session_state.current_module == "PPH Office Tools":
-            st.header("??? PPH Office Tools")
+            st.header("🛠️ PPH Office Tools")
             st.info("Coming soon!")
 
     st.markdown("---")
