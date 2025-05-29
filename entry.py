@@ -1,2390 +1,1809 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Advertisements-PPH</title>
+import streamlit as st
+import google.generativeai as genai
+import firebase_admin
+from firebase_admin import credentials, firestore
+import os
+from datetime import datetime
+from io import StringIO
+import time
+from difflib import SequenceMatcher
+from PIL import Image
+import requests
+from io import BytesIO
+from dotenv import load_dotenv
+import re
+import math
+
+# Load environment variables
+load_dotenv()
+
+# Initialize session state
+def init_session_state():
+    session_vars = {
+        'entries': [],
+        'uploaded_entries': [],
+        'upload_journal': "",
+        'upload_filename': "",
+        'show_files': False,
+        'processing': False,
+        'new_journal_name': "",
+        'viewing_entries': None,
+        'search_query': "",
+        'editing_entry': None,
+        'show_search_results': False,
+        'search_results': [],
+        'show_save_section': False,
+        'deleting_entry': None,
+        'deleting_file': None,
+        'editing_current_entry': None,
+        'deleting_current_entry': None,
+        'available_journals': [],
+        'current_edit_entry': None,
+        'authenticated': False,
+        'username': "",
+        'font_size': 'Medium',
+        'bg_color': '#ffffff',
+        'theme': 'Light',
+        'current_module': None,
+        'cloud_status': 'Not checked',
+        'ai_status': 'Not checked',
+        'cloud_error': '',
+        'ai_error': '',
+        'show_all_entries': False,
+        'manual_api_key': 'AIzaSyCiUe8rCj4Ik7zWWTJ3I0aRCV1P_af6Y7Y',
+        'show_api_key_input': False,
+        'delete_duplicates_mode': False,
+        'show_connection_status': False,
+        'app_mode': "?? Create Entries",
+        'show_formatted_entries': False,
+        'regex_filters': [],
+        'ai_prompts': [],
+        'show_regex_manager': False,
+        'show_prompt_manager': False,
+        'new_regex_filter': "",
+        'new_prompt_name': "",
+        'new_prompt_input': "",
+        'new_prompt_output': "",
+        'processing_start_time': None,
+        'current_chunk': 0,
+        'total_chunks': 0,
+        'is_admin': False,
+        'renaming_file': None,
+        'new_filename': "",
+        'moving_file': None,
+        'target_journal': "",
+        'last_activity_time': time.time(),
+        'deleting_journal': None,
+        'save_progress': 0,
+        'save_status': ""
+    }
+    for key, default_value in session_vars.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
+
+st.set_page_config(page_title="PPH CRM", layout="wide", initial_sidebar_state="expanded")
+init_session_state()
+
+# Helper functions
+def format_time(seconds):
+    """Format time in seconds to human-readable format"""
+    if seconds < 60:
+        return f"{seconds:.1f} seconds"
+    elif seconds < 3600:
+        minutes = seconds // 60
+        seconds = seconds % 60
+        return f"{int(minutes)} minutes {int(seconds)} seconds"
+    else:
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        return f"{int(hours)} hours {int(minutes)} minutes"
+
+def get_suggested_filename(journal):
+    """Generate a suggested filename based on journal name"""
+    if not journal:
+        return "entries.txt"
+    clean_name = re.sub(r'[^a-zA-Z0-9]', '_', journal)
+    return f"{clean_name}_{datetime.now().strftime('%Y%m%d')}.txt"
+
+def process_uploaded_file(uploaded_file):
+    """Process uploaded file and return entries"""
+    try:
+        stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
+        text = stringio.read()
+        entries = [entry.strip() for entry in text.split("\n\n") if entry.strip()]
+        return entries
+    except Exception as e:
+        st.error(f"Error processing file: {str(e)}")
+        return []
+
+# Regex processing functions
+def preprocess_with_regex(text):
+    """Clean up text before sending to AI using saved regex filters"""
+    if not st.session_state.regex_filters:
+        return text
+    
+    for pattern in st.session_state.regex_filters:
+        try:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+        except:
+            continue
+    
+    return '\n'.join([line.strip() for line in text.split('\n') if line.strip()])
+
+def load_regex_filters():
+    """Load regex filters from Firestore"""
+    db = get_firestore_db()
+    if not db:
+        return []
+    
+    try:
+        filters_ref = db.collection("regex_filters")
+        filters = []
+        for doc in filters_ref.stream():
+            filters.append(doc.to_dict().get("pattern", ""))
+        return filters
+    except Exception as e:
+        st.error(f"Error loading regex filters: {str(e)}")
+        return []
+
+def save_regex_filter(pattern):
+    """Save a new regex filter to Firestore"""
+    db = get_firestore_db()
+    if not db:
+        return False
+    
+    try:
+        doc_ref = db.collection("regex_filters").document()
+        doc_ref.set({
+            "pattern": pattern,
+            "created_by": st.session_state.username,
+            "created_at": datetime.now()
+        })
+        st.session_state.regex_filters = load_regex_filters()
+        return True
+    except Exception as e:
+        st.error(f"Error saving regex filter: {str(e)}")
+        return False
+
+def delete_regex_filter(pattern):
+    """Delete a regex filter from Firestore"""
+    db = get_firestore_db()
+    if not db:
+        return False
+    
+    try:
+        filters_ref = db.collection("regex_filters")
+        for doc in filters_ref.where("pattern", "==", pattern).stream():
+            doc.reference.delete()
+        st.session_state.regex_filters = load_regex_filters()
+        return True
+    except Exception as e:
+        st.error(f"Error deleting regex filter: {str(e)}")
+        return False
+
+def load_ai_prompts():
+    """Load AI prompts from Firestore"""
+    db = get_firestore_db()
+    if not db:
+        return []
+    
+    try:
+        prompts_ref = db.collection("ai_prompts")
+        prompts = []
+        for doc in prompts_ref.stream():
+            prompt_data = doc.to_dict()
+            prompt_data["id"] = doc.id
+            prompts.append(prompt_data)
+        return prompts
+    except Exception as e:
+        st.error(f"Error loading AI prompts: {str(e)}")
+        return []
+
+def save_ai_prompt(name, input_text, output_text):
+    """Save a new AI prompt example to Firestore"""
+    db = get_firestore_db()
+    if not db:
+        return False
+    
+    try:
+        doc_ref = db.collection("ai_prompts").document()
+        doc_ref.set({
+            "name": name,
+            "input": input_text,
+            "output": output_text,
+            "created_by": st.session_state.username,
+            "created_at": datetime.now()
+        })
+        st.session_state.ai_prompts = load_ai_prompts()
+        return True
+    except Exception as e:
+        st.error(f"Error saving AI prompt: {str(e)}")
+        return False
+
+def delete_ai_prompt(prompt_id):
+    """Delete an AI prompt from Firestore"""
+    db = get_firestore_db()
+    if not db:
+        return False
+    
+    try:
+        db.collection("ai_prompts").document(prompt_id).delete()
+        st.session_state.ai_prompts = load_ai_prompts()
+        return True
+    except Exception as e:
+        st.error(f"Error deleting AI prompt: {str(e)}")
+        return False
+
+# Firebase functions
+def initialize_firebase():
+    try:
+        if firebase_admin._apps:
+            st.session_state.cloud_status = "Connected"
+            return True
+            
+        cred = credentials.Certificate({
+            "type": st.secrets["firebase"]["type"],
+            "project_id": st.secrets["firebase"]["project_id"],
+            "private_key_id": st.secrets["firebase"]["private_key_id"],
+            "private_key": st.secrets["firebase"]["private_key"].replace('\\n', '\n'),
+            "client_email": st.secrets["firebase"]["client_email"],
+            "client_id": st.secrets["firebase"]["client_id"],
+            "auth_uri": st.secrets["firebase"]["auth_uri"],
+            "token_uri": st.secrets["firebase"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"],
+            "universe_domain": st.secrets["firebase"]["universe_domain"]
+        })
+        firebase_admin.initialize_app(cred)
+        st.session_state.cloud_status = "Connected"
+        return True
+    except Exception as e:
+        st.session_state.cloud_status = "Error"
+        st.session_state.cloud_error = str(e)
+        return False
+
+def get_firestore_db():
+    if not initialize_firebase():
+        st.error(f"Firebase initialization failed: {st.session_state.cloud_error}")
+        return None
+    return firestore.client()
+
+def is_duplicate(name, email):
+    """Check if an author is already in the system using the author_keys collection"""
+    if not name or not email:
+        return False
+        
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    key = f"{name.lower()}_{email.lower()}"
+    doc = db.collection("author_keys").document(key).get()
+    return doc.exists
+
+def save_entries_with_progress(entries, journal, filename, status_text):
+    """Save entries with progress tracking and duplicate checking"""
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    try:
+        # Create journal if it doesn't exist
+        journal_ref = db.collection("journals").document(journal)
+        if not journal_ref.get().exists:
+            journal_ref.set({"created": datetime.now()})
+
+        # Initialize progress tracking
+        total_entries = len(entries)
+        processed_count = 0
+        duplicates_found = 0
+        unique_entries = []
+        
+        # Setup progress bar
+        progress_bar = st.progress(0)
+        status_text.text("Checking for duplicates...")
+        
+        # Process entries in batches
+        batch_size = 50
+        batch = db.batch()
+        author_keys_batch = db.batch()
+        
+        for i, entry in enumerate(entries):
+            # Update progress
+            progress = int((i + 1) / total_entries * 100)
+            progress_bar.progress(progress)
+            status_text.text(f"Processing {i+1}/{total_entries} ({progress}%) - {duplicates_found} duplicates found")
+            
+            # Extract author info
+            name, email = extract_author_email(entry)
+            
+            if not name or not email:
+                continue  # Skip invalid entries
+                
+            # Check for duplicates using the optimized method
+            if is_duplicate(name, email):
+                duplicates_found += 1
+                continue
+                
+            # Add to unique entries
+            unique_entries.append(entry)
+            
+            # Create author key
+            key = f"{name.lower()}_{email.lower()}"
+            author_key_ref = db.collection("author_keys").document(key)
+            author_keys_batch.set(author_key_ref, {
+                "name": name,
+                "email": email,
+                "journal": journal,
+                "filename": filename,
+                "timestamp": datetime.now()
+            })
+            
+            # Commit batches periodically
+            if i > 0 and i % batch_size == 0:
+                batch.commit()
+                author_keys_batch.commit()
+                batch = db.batch()
+                author_keys_batch = db.batch()
+                
+            # Update last activity to prevent timeout
+            st.session_state.last_activity_time = time.time()
+        
+        # Commit any remaining entries
+        if len(unique_entries) > 0:
+            # Save the entries to the journal file
+            doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
+            batch.set(doc_ref, {
+                "entries": unique_entries,
+                "last_updated": datetime.now(),
+                "entry_count": len(unique_entries)
+            })
+            
+            batch.commit()
+            author_keys_batch.commit()
+        
+        progress_bar.progress(100)
+        
+        if duplicates_found:
+            status_text.text(f"Completed! Saved {len(unique_entries)} entries, skipped {duplicates_found} duplicates")
+        else:
+            status_text.text(f"Completed! Saved {len(unique_entries)} entries")
+            
+        return True
+        
+    except Exception as e:
+        st.error(f"Error saving entries: {str(e)}")
+        return False
+
+def check_duplicates(new_entries):
+    """Check for duplicates across all journals using author_keys collection"""
+    unique_entries = []
+    duplicate_info = {}
+    db = get_firestore_db()
+    
+    if not db:
+        return [], {}
+    
+    # Initialize progress tracking
+    total_entries = len(new_entries)
+    processed_count = 0
+    duplicates_found = 0
+    
+    # Setup progress bar if in Streamlit context
+    if 'progress' in globals() or 'progress' in locals():
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        status_text.text("Checking for duplicates...")
+    
+    for i, entry in enumerate(new_entries):
+        # Update progress if in Streamlit context
+        if 'progress_bar' in locals() and 'status_text' in locals():
+            progress = int((i + 1) / total_entries * 100)
+            progress_bar.progress(progress)
+            status_text.text(f"Processing {i+1}/{total_entries} ({progress}%) - {duplicates_found} duplicates found")
+        
+        # Extract author info
+        name, email = extract_author_email(entry)
+        
+        if not name or not email:
+            continue  # Skip invalid entries
+            
+        key = f"{name.lower()}_{email.lower()}"
+        
+        # Check for duplicates using the optimized method
+        if is_duplicate(name, email):
+            # Get existing duplicate info from author_keys
+            doc = db.collection("author_keys").document(key).get()
+            if doc.exists:
+                dup_data = doc.to_dict()
+                if key not in duplicate_info:
+                    duplicate_info[key] = []
+                duplicate_info[key].append({
+                    "entry": entry,
+                    "journal": dup_data.get("journal", "Unknown"),
+                    "filename": dup_data.get("filename", "Unknown"),
+                    "timestamp": dup_data.get("timestamp", datetime.now())
+                })
+            duplicates_found += 1
+        else:
+            # This is a new unique entry
+            unique_entries.append(entry)
+    
+    # Complete progress if in Streamlit context
+    if 'progress_bar' in locals() and 'status_text' in locals():
+        progress_bar.progress(100)
+        if duplicates_found:
+            status_text.text(f"Completed! Found {len(unique_entries)} unique entries, {duplicates_found} duplicates")
+        else:
+            status_text.text(f"Completed! Found {len(unique_entries)} unique entries")
+    
+    return unique_entries, duplicate_info
+
+def delete_all_duplicates():
+    """Delete all duplicate entries across the system, keeping only the latest version of each"""
+    db = get_firestore_db()
+    if not db:
+        return False, "Database connection failed"
+    
+    try:
+        # First collect all author keys
+        author_keys_ref = db.collection("author_keys")
+        author_keys = {}
+        
+        # Get all author keys to identify duplicates
+        for doc in author_keys_ref.stream():
+            data = doc.to_dict()
+            key = doc.id
+            author_keys[key] = data
+        
+        # Identify duplicates (same key but different documents)
+        duplicates_to_remove = []
+        unique_authors = set()
+        
+        for key, data in author_keys.items():
+            if key in unique_authors:
+                duplicates_to_remove.append((key, data))
+            else:
+                unique_authors.add(key)
+        
+        if not duplicates_to_remove:
+            return True, "No duplicates found in author_keys collection"
+        
+        # Remove duplicates from author_keys
+        batch = db.batch()
+        for i, (key, data) in enumerate(duplicates_to_remove):
+            doc_ref = author_keys_ref.document(key)
+            batch.delete(doc_ref)
+            
+            # Commit in batches to avoid timeout
+            if i > 0 and i % 100 == 0:
+                batch.commit()
+                batch = db.batch()
+        
+        batch.commit()
+        
+        return True, f"Removed {len(duplicates_to_remove)} duplicate author keys"
+    
+    except Exception as e:
+        return False, f"Error during duplicate removal: {str(e)}"
+
+def get_available_journals():
+    all_journals = []
+    db = get_firestore_db()
+    if db:
+        try:
+            journals_ref = db.collection("journals").stream()
+            all_journals = [journal.id for journal in journals_ref]
+        except Exception as e:
+            st.error(f"Error fetching journals: {str(e)}")
+    return sorted(list(set([
+        "Computer Science and Artificial Intelligence",
+        "Advanced Studies in Artificial Intelligence",
+        "Advances in Computer Science and Engineering",
+        "Far East Journal of Experimental and Theoretical Artificial Intelligence",
+        "Advances and Applications in Fluid Mechanics",
+        "Advances in Fuzzy Sets and Systems",
+        "Far East Journal of Electronics and Communications",
+        "Far East Journal of Mechanical Engineering and Physics",
+        "International Journal of Nutrition and Dietetics",
+        "International Journal of Materials Engineering and Technology",
+        "JP Journal of Solids and Structures",
+        "Advances and Applications in Discrete Mathematics",
+        "Advances and Applications in Statistics",
+        "Far East Journal of Applied Mathematics",
+        "Far East Journal of Dynamical Systems",
+        "Far East Journal of Mathematical Sciences (FJMS)",
+        "Far East Journal of Theoretical Statistics",
+        "JP Journal of Algebra, Number Theory and Applications",
+        "JP Journal of Biostatistics",
+        "JP Journal of Fixed Point Theory and Applications",
+        "JP Journal of Heat and Mass Transfer",
+        "Surveys in Mathematics and Mathematical Sciences",
+        "Universal Journal of Mathematics and Mathematical Sciences"
+    ] + all_journals)))
+
+def extract_author_email(entry):
+    """Extract author name and email from entry for duplicate detection"""
+    lines = entry.split('\n')
+    if len(lines) < 2:
+        return None, None
+    
+    # First line is name (remove "Professor" prefix if present)
+    name = lines[0].replace("Professor", "").strip()
+    email = lines[-1].strip()
+    
+    return name, email
+
+def get_journal_files(journal):
+    db = get_firestore_db()
+    if not db or not journal:
+        return []
+        
+    try:
+        files_ref = db.collection("journals").document(journal).collection("files")
+        files = []
+        for doc in files_ref.stream():
+            file_data = doc.to_dict()
+            files.append({
+                "name": doc.id,
+                "last_updated": file_data.get("last_updated", datetime.now()),
+                "entry_count": file_data.get("entry_count", len(file_data.get("entries", []))),
+                "entries": file_data.get("entries", [])
+            })
+        return files
+    except Exception as e:
+        st.error(f"Error fetching files: {str(e)}")
+        return []
+
+def download_entries(journal, filename):
+    db = get_firestore_db()
+    if not db:
+        return None, 0
+        
+    try:
+        doc = db.collection("journals").document(journal).collection("files").document(filename).get()
+        if doc.exists:
+            entries = doc.to_dict().get("entries", [])
+            entry_count = doc.to_dict().get("entry_count", len(entries))
+            return "\n\n".join(entries), entry_count
+        return None, 0
+    except Exception as e:
+        st.error(f"Error downloading entries: {str(e)}")
+        return None, 0
+
+def delete_file(journal, filename):
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    try:
+        # First remove all author keys associated with this file
+        entries, _ = download_entries(journal, filename)
+        if entries:
+            entries_list = entries.split('\n\n')
+            batch = db.batch()
+            
+            for entry in entries_list:
+                name, email = extract_author_email(entry)
+                if name and email:
+                    key = f"{name.lower()}_{email.lower()}"
+                    doc_ref = db.collection("author_keys").document(key)
+                    batch.delete(doc_ref)
+            
+            batch.commit()
+        
+        # Then delete the file itself
+        db.collection("journals").document(journal).collection("files").document(filename).delete()
+        return True
+    except Exception as e:
+        st.error(f"Error deleting file: {str(e)}")
+        return False
+
+def create_journal(journal_name):
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    try:
+        db.collection("journals").document(journal_name).set({"created": datetime.now()})
+        st.session_state.available_journals = get_available_journals()
+        return True
+    except Exception as e:
+        st.error(f"Error creating journal: {str(e)}")
+        return False
+
+def delete_journal(journal_name):
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    try:
+        # First delete all files in the journal (which will handle author_keys)
+        files_ref = db.collection("journals").document(journal_name).collection("files")
+        for file in files_ref.stream():
+            delete_file(journal_name, file.id)
+        
+        # Then delete the journal itself
+        db.collection("journals").document(journal_name).delete()
+        
+        # Update available journals
+        st.session_state.available_journals = get_available_journals()
+        return True
+    except Exception as e:
+        st.error(f"Error deleting journal: {str(e)}")
+        return False
+
+def update_entry(journal, filename, old_entry, new_entry):
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    try:
+        doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
+        doc = doc_ref.get()
+        if doc.exists:
+            entries = doc.to_dict().get("entries", [])
+            if old_entry in entries:
+                # First update the author key if name/email changed
+                old_name, old_email = extract_author_email(old_entry)
+                new_name, new_email = extract_author_email(new_entry)
+                
+                if old_name != new_name or old_email != new_email:
+                    # Delete old key
+                    old_key = f"{old_name.lower()}_{old_email.lower()}"
+                    db.collection("author_keys").document(old_key).delete()
+                    
+                    # Create new key
+                    new_key = f"{new_name.lower()}_{new_email.lower()}"
+                    db.collection("author_keys").document(new_key).set({
+                        "name": new_name,
+                        "email": new_email,
+                        "journal": journal,
+                        "filename": filename,
+                        "timestamp": datetime.now()
+                    })
+                
+                # Update the entry
+                entries[entries.index(old_entry)] = new_entry
+                doc_ref.update({
+                    "entries": entries,
+                    "last_updated": datetime.now(),
+                    "entry_count": len(entries)
+                })
+                return True
+        return False
+    except Exception as e:
+        st.error(f"Error updating entry: {str(e)}")
+        return False
+
+def delete_entry(journal, filename, entry):
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    try:
+        doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
+        doc = doc_ref.get()
+        if doc.exists:
+            entries = doc.to_dict().get("entries", [])
+            if entry in entries:
+                # Remove from author_keys
+                name, email = extract_author_email(entry)
+                if name and email:
+                    key = f"{name.lower()}_{email.lower()}"
+                    db.collection("author_keys").document(key).delete()
+                
+                # Remove from entries
+                entries.remove(entry)
+                doc_ref.update({
+                    "entries": entries,
+                    "last_updated": datetime.now(),
+                    "entry_count": len(entries)
+                })
+                return True
+        return False
+    except Exception as e:
+        st.error(f"Error deleting entry: {str(e)}")
+        return False
+
+def search_entries(query):
+    results = []
+    db = get_firestore_db()
+    if not db or not query:
+        return results
+        
+    try:
+        query = query.lower()
+        for journal in db.collection("journals").stream():
+            for file in db.collection("journals").document(journal.id).collection("files").stream():
+                if query in file.id.lower():
+                    results.append({
+                        "journal": journal.id,
+                        "filename": file.id,
+                        "entry": f"File: {file.id}",
+                        "full_path": f"{journal.id} > {file.id}",
+                        "is_file": True
+                    })
+                
+                entries = file.to_dict().get("entries", [])
+                for entry in entries:
+                    if query in entry.lower():
+                        results.append({
+                            "journal": journal.id,
+                            "filename": file.id,
+                            "entry": entry,
+                            "full_path": f"{journal.id} > {file.id}",
+                            "is_file": False
+                        })
+        return results
+    except Exception as e:
+        st.error(f"Error searching entries: {str(e)}")
+        return []
+
+def rename_file(journal, old_filename, new_filename):
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    try:
+        # Get the existing file data
+        doc_ref = db.collection("journals").document(journal).collection("files").document(old_filename)
+        doc = doc_ref.get()
+        
+        if not doc.exists:
+            return False
+            
+        file_data = doc.to_dict()
+        
+        # Create new document with the same data
+        db.collection("journals").document(journal).collection("files").document(new_filename).set(file_data)
+        
+        # Delete the old document
+        doc_ref.delete()
+        
+        return True
+    except Exception as e:
+        st.error(f"Error renaming file: {str(e)}")
+        return False
+
+def move_file(source_journal, filename, target_journal):
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    try:
+        # Get the existing file data
+        doc_ref = db.collection("journals").document(source_journal).collection("files").document(filename)
+        doc = doc_ref.get()
+        
+        if not doc.exists:
+            return False
+            
+        file_data = doc.to_dict()
+        
+        # Update all author_keys to point to new journal
+        entries = file_data.get("entries", [])
+        batch = db.batch()
+        
+        for entry in entries:
+            name, email = extract_author_email(entry)
+            if name and email:
+                key = f"{name.lower()}_{email.lower()}"
+                key_ref = db.collection("author_keys").document(key)
+                batch.update(key_ref, {
+                    "journal": target_journal
+                })
+        
+        batch.commit()
+        
+        # Create new document in target journal
+        db.collection("journals").document(target_journal).collection("files").document(filename).set(file_data)
+        
+        # Delete the old document
+        doc_ref.delete()
+        
+        return True
+    except Exception as e:
+        st.error(f"Error moving file: {str(e)}")
+        return False
+
+# AI processing function with improved progress tracking and activity monitoring
+def format_entries_chunked(text, status_text):
+    if st.session_state.ai_status != "Connected":
+        st.error("AI service is not available")
+        return ""
+        
+    st.session_state.processing_start_time = time.time()
+    preprocessed = preprocess_with_regex(text)
+    entries = [entry.strip() for entry in preprocessed.split("\n\n") if entry.strip()]
+    
+    if not entries:
+        return ""
+    
+    chunks = ['\n\n'.join(entries[i:i+50]) for i in range(0, len(entries), 50)]
+    st.session_state.total_chunks = len(chunks)
+    st.session_state.current_chunk = 0
+    formatted_parts = []
+    
+    progress_bar = st.progress(0)
+    status_text.text("Processing...")
+    
+    # Get the best available prompt
+    best_prompt = """You are an intelligent academic address refiner. Given a raw academic author affiliation block, clean and format the address into exactly five lines according to the structure below:
+
+Name  
+Department (if available)  
+University (most specific, if available)  
+Country (if available)  
+email@domain.com
+
+Rules to Follow:
+
+1. Include the Department only if explicitly mentioned (e.g., Department of Chemistry or School of Engineering).
+2. Only include the most specific University or Institute name (e.g., Harbin Institute of Technology).
+3. If both a College and a University are listed, retain only the University.
+4. Remove all the following:
+	- Postal codes, cities, buildings, room numbers, and internal unit codes.
+	- Lab names, centers, or research groups unless no department or school is present.
+	- Extra metadata like "View in Scopus", "Corresponding Author", "Authors at", their educational degree like Dr, Phd, etc.
+5. Format with exactly one component per line (Name, Department, University, Country, Email) and no blank lines.
+6. If multiple affiliations are given:
+	- For multiple affiliations, list each author's full name, department, university, country, and email. Do not skip any authors, even if a corresponding author is marked.
+7. Preserve proper capitalization, and avoid abbreviations unless officially part of the name.
+8. Never include duplicate information, address fragments, or unrelated affiliations.
+9. Take only "Corresponding authors at" address if given, in multiple address of single author.
+10. Ensure there are no asterisks (**) or other unnecessary symbols in the resulted text. 
+11. Do not write "Department not provided" or "email not provided" or anything similar in the formatted entries.
+12. Do not merge or combine any entries. Separate each entry with a blank line. Only include entries in the result that contain at least one email address.
+13. Exclude all postal addresses; only author affiliation, country, and email are required.
+14. Convert UTF-8 texts into regular readable text.
+
+Entries to format:
+{chunk}"""
+    
+    if st.session_state.ai_prompts:
+        # If we have saved prompts, use the most recent one as an example
+        latest_prompt = st.session_state.ai_prompts[-1]
+        best_prompt = f"""Format these author entries exactly like the following example:
+
+EXAMPLE INPUT:
+{latest_prompt['input']}
+
+EXAMPLE OUTPUT:
+{latest_prompt['output']}
+
+Entries to format:
+{{chunk}}"""
+    
+    for i, chunk in enumerate(chunks):
+        st.session_state.current_chunk = i + 1
+        progress = int((i + 1) / len(chunks) * 100)
+        progress_bar.progress(progress)
+        
+        # Update activity time to prevent timeout
+        st.session_state.last_activity_time = time.time()
+        
+        # Calculate estimated time remaining
+        elapsed = time.time() - st.session_state.processing_start_time
+        if i > 0:  # Only estimate after first chunk
+            avg_time_per_chunk = elapsed / (i + 1)
+            remaining_chunks = len(chunks) - (i + 1)
+            estimated_remaining = avg_time_per_chunk * remaining_chunks
+            status_text.text(
+                f"Processing chunk {i+1}/{len(chunks)} "
+                f"({progress}%) - "
+                f"Estimated time remaining: {format_time(estimated_remaining)}"
+            )
+        
+        try:
+            genai.configure(api_key=st.session_state.manual_api_key or os.getenv("GOOGLE_API_KEY"))
+            model = genai.GenerativeModel("gemini-1.5-flash-latest")
+            response = model.generate_content(best_prompt.format(chunk=chunk))
+            if response.text:
+                formatted_parts.append(response.text)
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
+    
+    processing_time = time.time() - st.session_state.processing_start_time
+    progress_bar.progress(100)
+    status_text.text(f"Completed in {format_time(processing_time)}")
+    return '\n\n'.join(formatted_parts)
+
+def test_service_connections():
+    max_retries = 3
+    retry_delay = 2
+    
+    # Test AI
+    for attempt in range(max_retries):
+        try:
+            api_key = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                st.session_state.ai_status = "Error"
+                st.session_state.ai_error = "No API key provided"
+                break
+                
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-1.5-flash-latest")
+            response = model.generate_content("Test connection")
+            if response.text:
+                st.session_state.ai_status = "Connected"
+                st.session_state.ai_error = ""
+                break
+        except Exception as e:
+            st.session_state.ai_status = "Error"
+            st.session_state.ai_error = str(e)
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (attempt + 1))
+    
+    # Test Cloud
+    for attempt in range(max_retries):
+        try:
+            db = get_firestore_db()
+            if db:
+                db.collection("test").document("test").get()
+                st.session_state.cloud_status = "Connected"
+                st.session_state.cloud_error = ""
+                break
+        except Exception as e:
+            st.session_state.cloud_status = "Error"
+            st.session_state.cloud_error = str(e)
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (attempt + 1))
+
+def check_services_status():
+    st.session_state.cloud_status = "Checking..."
+    st.session_state.ai_status = "Checking..."
+    st.session_state.cloud_error = ""
+    st.session_state.ai_error = ""
+    test_service_connections()
+
+def initialize_services():
+    API_KEY = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
+    
+    if not API_KEY:
+        st.session_state.ai_status = "Error"
+        st.session_state.ai_error = "No valid API key provided"
+        st.session_state.show_api_key_input = True
+        return False
+
+    try:
+        genai.configure(api_key=API_KEY)
+        st.session_state.ai_status = "Connected"
+    except Exception as e:
+        st.session_state.ai_status = "Error"
+        st.session_state.ai_error = str(e)
+        st.session_state.show_api_key_input = True
+        return False
+
+    return initialize_firebase()
+
+# Check services status on startup
+if st.session_state.cloud_status == 'Not checked' and st.session_state.ai_status == 'Not checked':
+    check_services_status()
+
+services_initialized = initialize_services()
+
+def load_logo():
+    try:
+        response = requests.get("https://github.com/prakashsharma19/hosted-images/raw/main/pphlogo.png")
+        img = Image.open(BytesIO(response.content))
+        return img
+    except:
+        return None
+
+logo = load_logo()
+
+def show_connection_status():
+    with st.sidebar.expander("?? Connection Status", expanded=False):
+        if st.session_state.cloud_status == "Connected":
+            st.success("? Cloud: Connected")
+        elif st.session_state.cloud_status == "Error":
+            st.error("? Cloud: Error")
+            st.text_area("Cloud Error Details", 
+                        value=st.session_state.cloud_error,
+                        height=100,
+                        disabled=True)
+        else:
+            st.warning("?? Cloud: Checking...")
+        
+        if st.session_state.ai_status == "Connected":
+            st.success("? AI: Connected")
+        elif st.session_state.ai_status == "Error":
+            st.error("? AI: Error")
+            st.text_area("AI Error Details",
+                        value=st.session_state.ai_error,
+                        height=100,
+                        disabled=True)
+        else:
+            st.warning("?? AI: Checking...")
+        
+        if st.session_state.show_api_key_input or st.session_state.ai_status == "Error":
+            with st.expander("?? Enter Gemini API Key"):
+                st.session_state.manual_api_key = st.text_input(
+                    "Gemini API Key:",
+                    value=st.session_state.manual_api_key,
+                    type="password"
+                )
+                if st.button("Save API Key"):
+                    if st.session_state.manual_api_key:
+                        try:
+                            genai.configure(api_key=st.session_state.manual_api_key)
+                            test_service_connections()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Invalid API key: {str(e)}")
+                    else:
+                        st.error("Please enter an API key")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("?? Refresh"):
+                check_services_status()
+                st.rerun()
+        with col2:
+            if st.button("?? Test Connections"):
+                with st.spinner("Testing connections..."):
+                    test_service_connections()
+                    st.rerun()
+
+def show_login_page():
+    st.markdown("""
     <style>
-        body {
-            font-family: 'Helvetica Neue', Arial, sans-serif;
-            background-color: #f4f4f4;
-            padding: 20px;
-            margin: 0;
-            color: #333;
-            position: relative;
-        }
-
-        h1 {
-            color: #1171ba;
-            text-align: center;
-            margin-bottom: 30px;
-            font-size: 28px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        h1 img {
-            margin-right: 10px;
-            height: 28px;
-        }
-
-        .font-controls,
         .login-container {
-            background-color: #ffffff;
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            margin-bottom: 20px;
             display: flex;
-            flex-direction: column;
-            align-items: flex-start;
-            width: 100%;
-        }
-
-        .font-controls .control-group {
-            display: flex;
-            flex-wrap: wrap;
+            justify-content: center;
             align-items: center;
-            justify-content: space-between;
-            width: 100%;
-            gap: 10px;
+            height: 100vh;
         }
-
-        .font-controls label {
-            margin-right: 10px;
-            font-weight: bold;
-            color: #2c3e50;
-        }
-
-        .font-controls select,
-        .font-controls input {
-            border-radius: 5px;
-            padding: 5px;
-            border: 1px solid #e0e0e0;
-            font-size: 14px;
-        }
-
-        .font-controls input[type="number"] {
-            width: 50px;
-        }
-
-        .fullscreen-button {
-            background-color: #1171ba;
-            border: none;
-            color: white;
-            padding: 10px 15px;
-            font-size: 16px;
-            cursor: pointer;
-            border-radius: 5px;
-            margin-top: 10px;
-            width: 100%;
-        }
-
-        .fullscreen-button:hover {
-            background-color: #0e619f;
-        }
-
-        .clear-memory-button {
-            background-color: red;
-            color: white;
-            padding: 10px 15px;
-            font-size: 16px;
-            cursor: pointer;
-            border-radius: 5px;
-            border: none;
-            position: absolute;
-            top: 20px;
-            left: 20px;
-        }
-
-        .clear-memory-button:hover {
-            background-color: darkred;
-        }
-
-        .text-container {
-            background-color: #ffffff;
-            padding: 15px;
-            border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            white-space: pre-wrap;
-            position: relative;
-            margin-top: 20px;
-            z-index: 2;
-            max-height: 500px;
-            overflow-y: auto;
-        }
-
-        .text-container p {
-            margin: 0 0 10px;
-            border-bottom: 1px solid #e0e0e0;
-            line-height: 1.5;
-            transition: all 0.1s ease-out;
-        }
-
-        /* Toggle Switch Style */
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 50px;
-            height: 24px;
-        }
-
-        .switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #ccc;
-            transition: 0.4s;
-            border-radius: 24px;
-        }
-
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 18px;
-            width: 18px;
-            left: 3px;
-            bottom: 3px;
-            background-color: white;
-            transition: 0.4s;
-            border-radius: 50%;
-        }
-
-        input:checked + .slider {
-            background-color: #1171ba;
-        }
-
-        input:checked + .slider:before {
-            transform: translateX(26px);
-        }
-
-        .toggle-container {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 10px;
-        }
-
-        #dearProfessorLabel {
-            font-size: 14px;
-            color: #333;
-        }
-
-        #undoButton,
-        #lockButton {
-            border: none;
-            color: white;
-            padding: 10px 15px;
-            font-size: 16px;
-            cursor: pointer;
-            border-radius: 5px;
-            transition: background-color 0.3s, transform 0.1s ease;
-            margin-top: 10px;
-            width: 100%;
-        }
-
-        #loginButton {
-            background-color: #007bff;
-            margin-top: 10px;
-            font-size: 16px;
-            border: none;
-            color: white;
-            padding: 10px 15px;
-            cursor: pointer;
-            border-radius: 5px;
-            transition: background-color 0.3s ease;
-        }
-
-        #loginButton:hover {
-            background-color: #0056b3;
-        }
-
-        #loginButton:active {
-            transform: scale(0.95);
-        }
-
-        #lockButton {
-            background-color: #1171ba;
-        }
-
-        #lockButton.locked {
-            background-color: #d9534f;
-        }
-
-        #lockButton:hover {
-            background-color: #0e619f;
-        }
-
-        #undoButton {
-            background-color: #1171ba;
-        }
-
-        .input-container {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 20px;
-            flex-direction: column;
-            align-items: center;
-        }
-
-        .input-container textarea {
-            width: 100%;
-            border-radius: 5px;
-            padding: 10px;
-            font-size: 16px;
-            border: 1px solid #e0e0e0;
-            margin-top: 10px;
-        }
-
-        .input-container .container-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: pointer;
-            background-color: #1171ba;
-            color: white;
-            padding: 10px;
-            border-radius: 5px;
-        }
-
-        .rough-container {
-            width: 30%;
-            margin-left: 0%;
-        }
-
-        .input-boxes {
-            display: none;
-        }
-
-        #okButton {
-            align-self: flex-end;
-            background-color: #28a745;
-            border: none;
-            color: white;
-            padding: 10px 20px;
-            font-size: 14px;
-            cursor: pointer;
-            border-radius: 5px;
-            margin-top: 10px;
-        }
-
-        #okButton:hover {
-            background-color: #218838;
-        }
-
-        #adCount,
-        #dailyAdCount,
-        #remainingTime,
-        #countryCount {
-            margin-top: 15px;
-            font-size: 18px;
-            font-weight: bold;
-            color: #2c3e50;
-        }
-
-        #loadingIndicator {
-            color: red;
-            margin-left: 10px;
-            font-size: 16px;
-            font-weight: bold;
-            display: none;
-        }
-
-        #remainingTime .hourglass {
-            vertical-align: middle;
-        }
-
-        #countryCount {
-            position: absolute;
-            left: 20px;
-            top: 250px;
-            font-size: 16px;
-            font-weight: bold;
-            line-height: 1.5;
-            color: #34495e;
-            background-color: white;
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            max-height: 600px;
-            overflow-y: auto;
-            width: 300px;
-            z-index: 100;
-        }
-
-        #cursorStart {
-            font-weight: bold;
-            color: #3498db;
-        }
-
-        #userControls {
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            font-size: 16px;
-            color: #34495e;
-            display: flex;
-            align-items: center;
-        }
-
-        #userControls img {
-            margin-right: 10px;
-            height: 28px;
-        }
-
-        #userControls span {
-            margin-right: 10px;
-            font-weight: bold;
-        }
-
-        #logoutButton {
-            background-color: #e74c3c;
-            border: none;
-            color: white;
-            padding: 5px 10px;
-            font-size: 14px;
-            cursor: pointer;
-            border-radius: 5px;
-        }
-
-        #logoutButton:hover {
-            background-color: #c0392b;
-        }
-
-        .error {
-            color: #e74c3c;
-            font-weight: bold;
-            font-style: italic;
-        }
-
-        .highlight-added {
-            background-color: #f4e542;
-        }
-
-        .login-container input {
-            width: 100%;
-            margin: 5px 0;
-            padding: 10px;
-            font-size: 16px;
-            border: 1px solid #e0e0e0;
-            border-radius: 5px;
-        }
-
-        .hourglass {
-            width: 24px;
-            height: 24px;
-            background-image: url('https://upload.wikimedia.org/wikipedia/commons/4/4e/Simpleicons_Interface_hourglass.svg');
-            background-size: cover;
-            display: inline-block;
-            margin-left: 10px;
-        }
-
-        .top-controls {
-            display: flex;
-            justify-content: flex-start;
-            align-items: center;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-
-        .right-content {
-            position: absolute;
-            top: 250px;
-            right: 20px;
-            width: 150px;
-        }
-
-        #currentTime {
-            font-size: 16px;
-            font-weight: bold;
-            color: #2c3e50;
-            margin-bottom: 10px;
-            text-align: right;
-        }
-
-        #remainingTimeText {
-            font-size: 18px;
-            font-weight: bold;
-            color: #2c3e50;
-            margin-bottom: 10px;
-            text-align: right;
-        }
-
-        .reminder-heading {
-            font-size: 16px;
-            font-weight: bold;
-            color: #2c3e50;
-            margin-bottom: 10px;
-            text-align: right;
-        }
-
-        .reminder-slots {
-            list-style-type: none;
-            padding: 0;
-            margin: 0;
-            text-align: right;
-        }
-
-        .reminder-slots li {
-            background-color: #d3eaf7;
-            color: #333;
-            padding: 5px;
-            border-radius: 5px;
-            margin-bottom: 5px;
-            cursor: pointer;
-            font-size: 12px;
-            transition: background-color 0.3s;
-        }
-
-        .reminder-slots li:hover,
-        .reminder-slots li.selected {
-            background-color: #1171ba;
-            color: white;
-        }
-
-        .popup {
-            display: none;
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
+        .login-box {
+            width: 400px;
             padding: 30px;
-            background-color: #2c3e50;
-            color: white;
-            border: 2px solid #e74c3c;
             border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
-            z-index: 1000;
-            text-align: center;
-            font-size: 24px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            background-color: #f5f5f5;
+        }
+        .header {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 30px;
+            flex-direction: column;
+        }
+        .app-title {
+            font-size: 28px;
             font-weight: bold;
+            color: #333;
+            margin-top: 15px;
         }
-
-        .popup button {
-            background-color: #e74c3c;
-            border: none;
-            color: white;
-            padding: 15px 30px;
-            font-size: 18px;
-            cursor: pointer;
-            border-radius: 5px;
-            transition: background-color 0.3s, transform 0.1s ease;
-            margin-top: 20px;
-        }
-
-        .popup button:hover {
-            background-color: #c0392b;
-        }
-
-        .popup button:active {
-            transform: scale(0.95);
-        }
-
-        .popup img {
-            width: 50px;
-            height: 50px;
-            margin-bottom: 20px;
-        }
-
-        .problem-heading {
-            color: #e74c3c;
-            font-style: italic;
-            margin-top: 10px;
-            font-size: 16px;
-            font-weight: bold;
-        }
-
-        .reminder-note {
-            font-style: italic;
-            font-size: 12px;
-            text-align: right;
-            margin-top: 5px;
+        .stTextInput>div>div>input {
+            padding: 10px;
+            background-color: #fff;
             color: #333;
         }
-
-        /* Progress bar */
-        .progress-bar-container {
+        .stButton>button {
             width: 100%;
-            height: 5px;
-            background-color: #e0e0e0;
-            border-radius: 5px;
-            margin-top: 20px;
-            overflow: hidden;
-        }
-
-        .progress-bar {
-            height: 100%;
-            width: 0;
-            background-color: #f00;
-            transition: width 0.5s ease-in-out, background-color 0.5s ease-in-out;
-        }
-
-        .scroll-locked {
-            overflow: hidden;
-        }
-
-        .scroll-lock-notice {
-            position: fixed;
-            bottom: 10px;
-            left: 10px;
-            background-color: #e74c3c;
-            color: white;
             padding: 10px;
             border-radius: 5px;
-            z-index: 10000;
-            font-size: 14px;
-            display: none;
-        }
-
-        /* Animations */
-        @keyframes fadeOut {
-            0% {
-                opacity: 1;
-            }
-            100% {
-                opacity: 0;
-            }
-        }
-
-        @keyframes vanish {
-            0% {
-                transform: scale(1);
-                opacity: 1;
-            }
-            100% {
-                transform: scale(0);
-                opacity: 0;
-            }
-        }
-
-        @keyframes explode {
-            0% {
-                transform: scale(1);
-                opacity: 1;
-            }
-            100% {
-                transform: scale(3);
-                opacity: 0;
-            }
-        }
-
-        .fadeOut {
-            animation: fadeOut 0.1s forwards;
-        }
-
-        .vanish {
-            animation: vanish 0.1s forwards;
-        }
-
-        .explode {
-            animation: explode 0.1s forwards;
-        }
-
-        .highlight-added {
-            background-color: #f4e542;
-        }
-
-        /* Credit Section */
-        #credit {
-            position: fixed;
-            bottom: 10px;
-            right: 10px;
-            font-size: 12px;
-            color: #34495e;
-        }
-
-        #credit a {
-            color: #1171ba;
-            text-decoration: none;
-        }
-
-        #credit a:hover {
-            text-decoration: underline;
-        }
-
-        /* Right Sidebar for Buttons */
-        #rightSidebar {
-            margin-top: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            align-items: flex-end;
-            z-index: 999;
-        }
-
-        /* Options in the font control pane */
-        .gap-control {
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            margin-top: 10px;
-        }
-
-        /* Country Filter Section */
-        .country-filter {
-            margin-top: 10px;
-        }
-
-        .country-item {
-            display: flex;
-            align-items: center;
-            margin-bottom: 5px;
-        }
-
-        .country-toggle {
-            margin-right: 10px;
-        }
-
-        .country-name {
-            flex-grow: 1;
-        }
-
-        .country-count {
-            font-weight: bold;
-            margin-left: 10px;
-        }
-
-        /* Group Management Section */
-        .group-management {
-            margin-top: 15px;
-            border-top: 1px solid #e0e0e0;
-            padding-top: 10px;
-        }
-
-        .group-item {
-            margin-bottom: 10px;
-            padding: 8px;
-            background-color: #f8f9fa;
-            border-radius: 5px;
-        }
-
-        .group-toggle {
-            margin-right: 10px;
-        }
-
-        .group-name {
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-
-        .group-countries {
-            font-size: 12px;
-            color: #666;
-            margin-left: 20px;
-            margin-bottom: 5px;
-        }
-
-        .group-controls {
-            margin-top: 10px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 5px;
-        }
-
-        .group-input {
-            width: 150px;
-            padding: 5px;
-            margin-right: 5px;
-            border: 1px solid #e0e0e0;
-            border-radius: 3px;
-        }
-
-        .group-button {
-            padding: 5px 10px;
-            background-color: #1171ba;
-            color: white;
             border: none;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 12px;
-        }
-
-        .group-button:hover {
-            background-color: #0e619f;
-        }
-
-        /* Small toggle switch for countries */
-        .small-switch {
-            position: relative;
-            display: inline-block;
-            width: 40px;
-            height: 20px;
-        }
-
-        .small-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .small-slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #ccc;
-            transition: 0.4s;
-            border-radius: 20px;
-        }
-
-        .small-slider:before {
-            position: absolute;
-            content: "";
-            height: 14px;
-            width: 14px;
-            left: 3px;
-            bottom: 3px;
-            background-color: white;
-            transition: 0.4s;
-            border-radius: 50%;
-        }
-
-        .small-switch input:checked + .small-slider {
-            background-color: #1171ba;
-        }
-
-        .small-switch input:checked + .small-slider:before {
-            transform: translateX(20px);
-        }
-
-        /* Collapsible sections */
-        .collapsible {
-            cursor: pointer;
-            padding: 8px;
-            width: 100%;
-            border: none;
-            text-align: left;
-            outline: none;
+            background-color: #3498db;
+            color: white;
             font-weight: bold;
-            background-color: #f1f1f1;
-            margin-top: 5px;
-            border-radius: 5px;
         }
-
-        .collapsible:after {
-            content: '\002B';
-            color: #1171ba;
-            font-weight: bold;
-            float: right;
-            margin-left: 5px;
-        }
-
-        .active:after {
-            content: "\2212";
-        }
-
-        .collapsible-content {
-            padding: 0 5px;
-            max-height: 0;
-            overflow: hidden;
-            transition: max-height 0.2s ease-out;
-        }
-
-        /* Search box */
-        .search-box {
-            width: 100%;
-            padding: 8px;
-            margin-bottom: 10px;
-            border: 1px solid #e0e0e0;
-            border-radius: 5px;
-            font-size: 14px;
-        }
-
-        /* Bulk action buttons */
-        .bulk-actions {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 10px;
-        }
-
-        .bulk-button {
-            padding: 5px 10px;
-            background-color: #6c757d;
-            color: white;
-            border: none;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 12px;
-        }
-
-        .bulk-button:hover {
-            background-color: #5a6268;
-        }
-
-        .bulk-button.all {
-            background-color: #28a745;
-        }
-
-        .bulk-button.all:hover {
-            background-color: #218838;
-        }
-
-        .bulk-button.none {
-            background-color: #dc3545;
-        }
-
-        .bulk-button.none:hover {
-            background-color: #c82333;
-        }
-
-        /* Button styles for new buttons */
-        .btn {
-            padding: 8px 15px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 14px;
-            margin: 5px;
-            transition: all 0.3s;
-        }
-
-        .btn.save {
-            background-color: #28a745;
-            color: white;
-        }
-
-        .btn.delete {
-            background-color: #dc3545;
-            color: white;
-        }
-
-        .btn.email-list {
-            background-color: #17a2b8;
-            color: white;
-        }
-
-        .btn.google {
-            background-color: #ffc107;
-            color: #212529;
-        }
-
-        .button-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-
-        .input-box {
-            padding: 8px;
-            border: 1px solid #e0e0e0;
-            border-radius: 5px;
-            font-size: 14px;
-            flex-grow: 1;
-        }
-
-        .success-message {
-            background-color: #28a745;
-            color: white;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 10px;
-            text-align: center;
-            display: none;
+        .stButton>button:hover {
+            background-color: #2980b9;
         }
     </style>
-</head>
-<body>
-    <h1>
-        <img src="https://raw.githubusercontent.com/prakashsharma19/hosted-images/main/pphlogo.png" alt="PPH Logo">
-        Advertisements-PPH
-    </h1>
+    """, unsafe_allow_html=True)
 
-    <!-- Clear memory button -->
-    <button class="clear-memory-button" onclick="clearMemory()">Clear Memory</button>
+    with st.container():
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.markdown('<div class="header">', unsafe_allow_html=True)
+            if logo:
+                st.image(logo, width=150)
+            st.markdown('<div class="app-title">PPH CRM</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col2:
+            st.markdown("### Login")
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            
+            if st.button("Login"):
+                valid_users = {
+                    "prakash": "PPHprakash123@",
+                    "mangal": "mangal123@",
+                    "manish": "manish123@",
+                    "rajeev": "rajeev123@",
+                    "ashish": "ashish123@",
+                    "arun": "arunazad123@",
+                    "admin": "admin123!@#"
+                }
+                
+                if username.lower() in valid_users and password == valid_users[username.lower()]:
+                    st.session_state.authenticated = True
+                    st.session_state.username = username
+                    st.session_state.is_admin = (username.lower() == "prakash")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password")
 
-    <!-- User Controls in upper-right corner -->
-    <div id="userControls" style="display: none;">
-        <img src="https://raw.githubusercontent.com/prakashsharma19/hosted-images/main/pphlogo.png" alt="PPH Logo">
-        <span id="loggedInUser"></span>
-        <button id="logoutButton" onclick="logout()">Logout</button>
-    </div>
-
-    <div class="login-container">
-        <input type="text" id="username" placeholder="Enter your name">
-        <input type="password" id="password" placeholder="Enter your password">
-        <button id="loginButton" onclick="login()">Login</button>
-    </div>
-
-    <div class="font-controls" style="display:none;">
-        <div class="control-group">
-            <div>
-                <label>
-                    <input type="radio" name="cutOption" value="keyboard" checked>
-                    Keyboard
-                </label>
-                <label>
-                    <input type="radio" name="cutOption" value="mouse">
-                    Mouse
-                </label>
-            </div>
-
-            <div>
-                <label for="effectsToggle">Effects:</label>
-                <input type="checkbox" id="effectsToggle" onchange="saveEffectPreferences()">
-            </div>
-
-            <div>
-                <label for="effectType">Effect:</label>
-                <select id="effectType" onchange="saveEffectPreferences()">
-                    <option value="none">None</option>
-                    <option value="fadeOut">Fade Out</option>
-                    <option value="vanish">Vanish</option>
-                    <option value="explode">Explode</option>
-                </select>
-            </div>
-
-            <div>
-                <label for="fontStyle">Font:</label>
-                <select id="fontStyle" onchange="updateFont()">
-                    <option value="Arial">Arial</option>
-                    <option value="Times New Roman">Times New Roman</option>
-                    <option value="Courier New">Courier New</option>
-                    <option value="Georgia">Georgia</option>
-                    <option value="Calibri Light">Calibri Light</option>
-                </select>
-            </div>
-
-            <div>
-                <label for="fontSize">Size:</label>
-                <input type="number" id="fontSize" value="16" onchange="updateFont()">px
-            </div>
-
-            <div class="gap-control">
-                <label for="gapOption">Gap:</label>
-                <select id="gapOption" onchange="saveGapPreferences()">
-                    <option value="default">Default</option>
-                    <option value="nil">Nil</option>
-                </select>
-            </div>
-        </div>
-    </div>
-
-    <div class="button-container">
-        <input type="email" id="unsubscribedEmail" placeholder="Enter Unsubscribed Email" class="input-box">
-        
-        <button onclick="saveUnsubscribedEmail()" id="exportButton" class="btn save">
-            Save
-        </button>
-        
-        <button onclick="deleteUnsubscribedEntries()" class="btn delete">
-             Delete Unsubscribed Ad ✘
-        </button>
-        
-        <button onclick="window.open('https://docs.google.com/document/d/14AIqhs3wQ_T0hV7YNH2ToBRBH1MEkzmunw2e9WNgeo8/edit?tab=t.0', '_blank')" 
-                class="btn email-list">
-            Email List
-        </button>
-        
-        <button onclick="window.open('https://docs.google.com/spreadsheets/d/10OYn06bPKVXmf__3d9Q_7kky8VHRlIKO/edit?gid=1887922208#gid=1887922208', '_blank')" class="btn google">
-            Update Ad Progress
-        </button>
-    </div>
-
-    <div id="successMessage" class="success-message" style="display: none;">Email saved successfully!</div>
-
-    <div class="toggle-container">
-        <label class="switch">
-            <input type="checkbox" id="dearProfessorToggle" onchange="toggleDearProfessor()">
-            <span class="slider round"></span>
-        </label>
-        <span id="dearProfessorLabel">Include "Dear Professor"</span>
-    </div>
-
-    <div class="input-container" style="display:none;">
-        <div class="container-header" onclick="toggleBox('pasteBox')">
-            Paste your text here
-            <span id="pasteBoxToggle">[+]</span>
-        </div>
-        <div id="pasteBox" class="input-boxes">
-            <textarea id="inputText" rows="5" placeholder="Paste your text here..."></textarea>
-            <button id="okButton" onclick="processText()">Process</button>
-        </div>
-    </div>
-
-    <!-- Incomplete Entries Box -->
-    <div class="input-container" style="display:none;">
-        <div class="container-header" onclick="toggleBox('incompleteBox')">
-            Incomplete Entries/Removed Countries
-            <span id="incompleteBoxToggle">[+]</span>
-        </div>
-        <div id="incompleteBox" class="input-boxes">
-            <textarea id="incompleteText" rows="5" placeholder="Incomplete entries will be shown here..."></textarea>
-            <button onclick="copyIncompleteEntries()">Copy</button>
-        </div>
-    </div>
-
-    <div class="input-container" style="display:none;">
-        <div class="container-header" onclick="toggleBox('roughBox')">
-            Rough Work
-            <span id="roughBoxToggle">[+]</span>
-        </div>
-        <div id="roughBox" class="input-boxes rough-container">
-            <textarea id="roughText" rows="5" placeholder="Rough Work..."></textarea>
-        </div>
-    </div>
-
-    <div class="top-controls" style="display:none;">
-        <div id="remainingTime">File completed by: <span id="remainingTimeText"></span> (<span id="completionPercentage">0%</span>)
-            <div class="hourglass"></div>
-        </div>
-    </div>
-
-    <div id="adCount" style="display:none;">
-        Total Advertisements: <span id="totalAds">0</span>
-        <span id="loadingIndicator">Processing, please wait...</span>
-    </div>
-    <div id="dailyAdCount" style="display:none;">Total Ads Sent Today: 0</div>
-    <div class="progress-bar-container">
-        <div class="progress-bar" id="progressBar"></div>
-    </div>
-    <div id="countryCount" style="display:none;">
-        <div class="country-filter">
-            <button class="collapsible">Country Filters</button>
-            <div class="collapsible-content" id="countryFilters">
-                <input type="text" id="countrySearch" class="search-box" placeholder="Search countries..." onkeyup="searchCountries()">
-                <div class="bulk-actions">
-                    <button class="bulk-button all" onclick="toggleAllCountries(true)">All</button>
-                    <button class="bulk-button none" onclick="toggleAllCountries(false)">None</button>
-                </div>
-                <div id="countryListContainer"></div>
-            </div>
-        </div>
-        <div class="group-management">
-            <button class="collapsible">Country Groups</button>
-            <div class="collapsible-content">
-                <div id="countryGroups"></div>
-                <div class="group-controls">
-                    <input type="text" id="newGroupName" class="group-input" placeholder="Group name">
-                    <button onclick="createGroup()" class="group-button">Create Group</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="output" class="text-container" style="display:none;" contenteditable="true">
-        <p id="cursorStart">Place your cursor here</p>
-    </div>
-
-    <div class="right-content">
-        <div id="currentTime"></div>
-        <div class="reminder-heading">Ad Slots:</div>
-        <ul class="reminder-slots">
-            <li data-time="09:00">9:00-9:30 AM</li>
-            <li data-time="10:35">10:35-10:45 AM</li>
-            <li data-time="11:50">11:50-12:00 PM</li>
-            <li data-time="13:05">1:05-1:10 PM</li>
-            <li data-time="14:20">2:20-2:30 PM</li>
-            <li data-time="15:40">3:40-3:45 PM</li>
-            <li data-time="16:50">4:50-5:00 PM</li>
-        </ul>
-        <div class="reminder-note">(Select your slots to get reminder)</div>
-
-        <!-- Button Container -->
-        <div id="rightSidebar" style="display:none;">
-            <button class="fullscreen-button" onclick="toggleFullScreen()">Full Screen</button>
-            <button id="undoButton" style="display:none;" onclick="undoLastCut()">Undo Last Cut</button>
-            <button id="lockButton" onclick="toggleLock()">Lock</button>
-        </div>
-    </div>
-
-    <div id="reminderPopup" class="popup">
-        <span style="font-size: 50px;">⏰</span>
-        <p>Send Ads</p>
-        <button onclick="dismissPopup()">OK</button>
-    </div>
-
-    <!-- Scroll Lock Notice -->
-    <div id="scrollLockNotice" class="scroll-lock-notice">Scrolling is locked. Unlock to scroll.</div>
-
-    <!-- Credit Section -->
-    <div id="credit">
-        This Web-App is Developed by <a href="https://prakashsharma19.github.io/prakash/" target="_blank">Prakash</a>
-    </div>
+def apply_theme_settings():
+    font_sizes = {
+        "Small": "14px",
+        "Medium": "16px",
+        "Large": "18px"
+    }
     
-    <script>
-        // Country list shortened for brevity - include your full country list here
-        const countryList = [
-            "Afghanistan", "Algeria", "Andorra", "Angola", /* ... include all your countries ... */, "Zimbabwe"
-        ];
+    current_font_size = font_sizes.get(st.session_state.font_size, "16px")
+    
+    st.markdown(f"""
+    <style>
+        .stApp {{
+            background-color: #ffffff;
+            color: #333333;
+            font-size: {current_font_size};
+        }}
+        .css-1d391kg, .css-1y4p8pa {{
+            background-color: #f5f5f5;
+        }}
+        .stTextInput>div>div>input, .stTextArea>div>div>textarea {{
+            background-color: #ffffff;
+            color: #333333;
+            font-size: {current_font_size};
+            border: 1px solid #ddd;
+        }}
+        .st-bb, .st-at, .st-ae, .st-af, .st-ag, .st-ah, .st-ai, .st-aj, .st-ak, .st-al {{
+            font-size: {current_font_size};
+            color: #333333;
+        }}
+        .sidebar .sidebar-content {{
+            font-size: {current_font_size};
+            background-color: #f5f5f5;
+            color: #333333;
+        }}
+        .stButton>button {{
+            color: #ffffff;
+            background-color: #3498db;
+        }}
+        .stButton>button:hover {{
+            background-color: #2980b9;
+        }}
+        .stAlert {{
+            color: #333333;
+        }}
+        .st-expander {{
+            background-color: #ffffff;
+            border: 1px solid #ddd;
+        }}
+    </style>
+    """, unsafe_allow_html=True)
 
-        // Performance optimized variables
-        const MAX_VISIBLE_PARAGRAPHS = 50;
-        const PROCESSING_CHUNK_SIZE = 100;
-        const PROCESSING_DELAY = 0;
-        const CUT_COOLDOWN = 50; // ms
+def show_main_menu():
+    st.markdown("""
+    <style>
+        .menu-container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            margin-top: 50px;
+        }
+        .menu-item {
+            padding: 30px;
+            background-color: #f5f5f5;
+            border-radius: 10px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            transition: transform 0.3s;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            height: 120px;
+        }
+        .menu-item:hover {
+            transform: scale(1.02);
+            background-color: #e5e5e5;
+        }
+        .menu-icon {
+            font-size: 40px;
+            margin-right: 15px;
+        }
+        .menu-title {
+            font-size: 28px;
+            font-weight: bold;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="header">', unsafe_allow_html=True)
+    if logo:
+        st.image(logo, width=150)
+    st.markdown('<div class="app-title">PPH CRM</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="menu-container">', unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("?? Entry Module", use_container_width=True):
+            st.session_state.current_module = "Entry"
+            st.rerun()
+    
+    with col2:
+        if st.button("??? PPH Office Tools", use_container_width=True):
+            st.session_state.current_module = "PPH Office Tools"
+            st.rerun()
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+def show_regex_manager():
+    st.subheader("?? Regex Filter Management")
+    st.write("Add patterns to automatically filter before AI processing")
+    
+    # Display current filters
+    st.write("**Current Filters:**")
+    if not st.session_state.regex_filters:
+        st.info("No regex filters saved yet")
+    else:
+        for i, pattern in enumerate(st.session_state.regex_filters):
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.code(pattern)
+            with col2:
+                if st.button("???", key=f"del_regex_{i}"):
+                    if delete_regex_filter(pattern):
+                        st.success("Filter deleted successfully!")
+                        st.rerun()
+    
+    # Add new filter
+    with st.form(key="add_regex_form"):
+        new_filter = st.text_input("New Regex Pattern:", value=st.session_state.new_regex_filter)
+        if st.form_submit_button("Add Filter"):
+            if new_filter.strip():
+                if save_regex_filter(new_filter.strip()):
+                    st.success("Filter added successfully!")
+                    st.session_state.new_regex_filter = ""
+                    st.rerun()
+                else:
+                    st.error("Failed to add filter")
+
+def show_prompt_manager():
+    st.subheader("?? AI Prompt Improvement")
+    st.write("Add examples to improve the AI's formatting")
+    
+    # Display saved prompts
+    st.write("**Saved Prompts:**")
+    if not st.session_state.ai_prompts:
+        st.info("No AI prompts saved yet")
+    else:
+        for prompt in st.session_state.ai_prompts:
+            expander = st.expander(f"?? {prompt.get('name', 'Unnamed')}")
+            with expander:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("**Input:**")
+                    st.text_area("", value=prompt.get("input", ""), height=150, disabled=True, key=f"input_{prompt['id']}")
+                with col2:
+                    st.write("**Output:**")
+                    st.text_area("", value=prompt.get("output", ""), height=150, disabled=True, key=f"output_{prompt['id']}")
+                
+                if st.button("??? Delete", key=f"delete_{prompt['id']}"):
+                    if delete_ai_prompt(prompt['id']):
+                        st.success("Prompt deleted successfully!")
+                        st.rerun()
+    
+    # Add new prompt example
+    with st.form(key="add_prompt_form"):
+        st.write("**Add New Example:**")
+        name = st.text_input("Example Name:", value=st.session_state.new_prompt_name)
+        col1, col2 = st.columns(2)
+        with col1:
+            input_text = st.text_area("Unformatted Input:", height=200, value=st.session_state.new_prompt_input)
+        with col2:
+            output_text = st.text_area("Formatted Output:", height=200, value=st.session_state.new_prompt_output)
         
-        let currentUser = null;
-        let dailyAdCount = 0;
-        let cutHistory = [];
-        let isLocked = false;
-        let isProcessing = false;
-        let totalParagraphs = 0;
-        let cutCooldown = false;
-        let countryStates = {};
-        let countryGroups = {};
-        let allParagraphs = [];
-        let renderedParagraphs = [];
-        let visibleStartIndex = 0;
-        let includeDearProfessor = true;
-        let worker = null;
+        if st.form_submit_button("Save Example"):
+            if name.strip() and input_text.strip() and output_text.strip():
+                if save_ai_prompt(name.strip(), input_text.strip(), output_text.strip()):
+                    st.success("Example saved successfully!")
+                    st.session_state.new_prompt_name = ""
+                    st.session_state.new_prompt_input = ""
+                    st.session_state.new_prompt_output = ""
+                    st.rerun()
+                else:
+                    st.error("Failed to save example")
 
-        // Initialize web worker
-        function initWorker() {
-            if (window.Worker) {
-                const workerCode = `
-                    const highlightErrors = (text) => {
-                        let modifiedText = text.replace(/\\?/g, '<span class="error">?</span>');
-                        const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/;
-                        
-                        if (!emailRegex.test(text)) {
-                            modifiedText += ' <span class="error">Missing email</span>';
-                        }
-                        
-                        const countries = ${JSON.stringify(countryList)};
-                        
-                        if (!countries.some(country => text.includes(country))) {
-                            modifiedText += ' <span class="error">Missing country</span>';
-                        }
-                        
-                        return modifiedText;
-                    };
+def show_entry_module():
+    if not st.session_state.authenticated:
+        show_login_page()
+        return
 
-                    self.onmessage = function(e) {
-                        if (e.data.type === 'processChunk') {
-                            const results = [];
-                            const chunk = e.data.chunk;
-                            
-                            for (let i = 0; i < chunk.length; i++) {
-                                const paragraph = chunk[i].trim();
-                                if (paragraph !== '') {
-                                    const lines = paragraph.split('\\n');
-                                    let firstLine = lines[0].trim();
+    # Load regex filters and AI prompts if admin
+    if st.session_state.is_admin:
+        if 'regex_filters' not in st.session_state or not st.session_state.regex_filters:
+            st.session_state.regex_filters = load_regex_filters()
+        if 'ai_prompts' not in st.session_state or not st.session_state.ai_prompts:
+            st.session_state.ai_prompts = load_ai_prompts()
+
+    st.title("?? PPH CRM - Entry Module")
+    
+    if logo:
+        st.image(logo, width=100)
+
+    # Show admin tools if logged in as admin
+    if st.session_state.is_admin:
+        admin_col1, admin_col2 = st.columns(2)
+        with admin_col1:
+            if st.button("?? Manage Regex Filters"):
+                st.session_state.show_regex_manager = not st.session_state.show_regex_manager
+        with admin_col2:
+            if st.button("?? Improve AI Prompts"):
+                st.session_state.show_prompt_manager = not st.session_state.show_prompt_manager
+        
+        if st.session_state.show_regex_manager:
+            show_regex_manager()
+            st.markdown("---")
+        
+        if st.session_state.show_prompt_manager:
+            show_prompt_manager()
+            st.markdown("---")
+
+    # Update available journals list
+    st.session_state.available_journals = get_available_journals()
+
+    st.session_state.app_mode = st.radio(
+        "Select Operation",
+        ["?? Create Entries", "?? Upload Entries", "?? Search Database", "?? Manage Journals"],
+        horizontal=True
+    )
+
+    if st.session_state.app_mode == "?? Create Entries":
+        st.header("?? Create Entries")
+        raw_text = st.text_area("Paste author entries here (one entry per paragraph):", height=300)
+        
+        if st.button("Format Entries"):
+            if raw_text.strip():
+                status_text = st.empty()
+                formatted = format_entries_chunked(raw_text, status_text)
+                if formatted:
+                    st.session_state.entries = formatted.split('\n\n')
+                    st.success(f"Formatted {len(st.session_state.entries)} entries!")
+                    st.session_state.show_save_section = True
+            
+        if st.session_state.get('show_save_section', False) and st.session_state.entries:
+            st.subheader("Formatted Entries")
+            
+            if st.button("Show Formatted Entries"):
+                st.session_state.show_formatted_entries = not st.session_state.show_formatted_entries
+            
+            if st.session_state.show_formatted_entries:
+                st.write("Showing first 30 entries:")
+                for i, entry in enumerate(st.session_state.entries[:30]):
+                    st.text_area("", value=entry, height=150, disabled=True, key=f"entry_{i}")
+                
+                if len(st.session_state.entries) > 30:
+                    if st.button("Show All Entries"):
+                        st.session_state.show_all_entries = True
+                        st.rerun()
+                    
+                    if st.button("Download All Entries"):
+                        entries_text = "\n\n".join(st.session_state.entries)
+                        st.download_button(
+                            label="Download Now",
+                            data=entries_text,
+                            file_name="formatted_entries.txt",
+                            mime="text/plain"
+                        )
+            
+            entries_text = "\n\n".join(st.session_state.entries)
+            st.download_button(
+                "Download All Entries",
+                entries_text,
+                "formatted_entries.txt"
+            )
+            
+            selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
+            filename = st.text_input("Filename:", get_suggested_filename(selected_journal))
+            
+            if st.button("Save to Database"):
+                status_text = st.empty()
+                if save_entries_with_progress(st.session_state.entries, selected_journal, filename, status_text):
+                    st.success("Entries saved successfully!")
+                    st.session_state.show_save_section = False
+
+    elif st.session_state.app_mode == "?? Upload Entries":
+        st.header("?? Upload Entries")
+        
+        if st.button("? Delete Duplicate Entries", type="primary", help="Remove all duplicate entries from the entire system"):
+            st.session_state.delete_duplicates_mode = True
+        
+        if st.session_state.delete_duplicates_mode:
+            with st.spinner("Searching for and removing duplicates..."):
+                success, message = delete_all_duplicates()
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
+                st.session_state.delete_duplicates_mode = False
+        
+        uploaded_file = st.file_uploader("Upload TXT file with author entries", type=["txt"])
+        
+        if uploaded_file:
+            st.session_state.upload_journal = st.selectbox(
+                "Select Journal for Uploaded Entries:",
+                st.session_state.available_journals
+            )
+            
+            st.session_state.upload_filename = st.text_input(
+                "Filename for uploaded entries:",
+                get_suggested_filename(st.session_state.upload_journal)
+            )
+            
+            uploaded_entries = process_uploaded_file(uploaded_file)
+            if uploaded_entries:
+                st.session_state.uploaded_entries = uploaded_entries
+                st.success(f"Found {len(uploaded_entries)} raw entries in file")
+                
+                if st.button("Process Uploaded Entries"):
+                    with st.spinner("Checking for duplicates..."):
+                        unique_entries, duplicates = check_duplicates(st.session_state.uploaded_entries)
+                        
+                        if duplicates:
+                            st.warning(f"Found {len(duplicates)} duplicate entries that will not be saved")
+                            with st.expander("?? Duplicate Details"):
+                                for key, dup_list in duplicates.items():
+                                    name, email = extract_author_email(dup_list[0]["entry"])
+                                    st.write(f"**Author:** {name} ({email})")
+                                    st.write(f"- Found in: {dup_list[0]['journal']} > {dup_list[0]['filename']}")
+                                    st.write(f"- Original entry date: {dup_list[0]['timestamp'].strftime('%d-%b-%Y') if isinstance(dup_list[0]['timestamp'], datetime) else 'Unknown'}")
+                                    st.write(f"- Number of duplicates: {len(dup_list)}")
                                     
-                                    if (!firstLine.startsWith('Professor')) {
-                                        firstLine = 'Professor ' + firstLine;
-                                        lines[0] = firstLine;
-                                    }
+                                    if st.button("View Original Entry", key=f"view_{key}"):
+                                        original_content, _ = download_entries(dup_list[0]['journal'], dup_list[0]['filename'])
+                                        if original_content:
+                                            original_entries = original_content.split('\n\n')
+                                            for orig_entry in original_entries:
+                                                if name in orig_entry and email in orig_entry:
+                                                    st.text_area("Original Entry:", value=orig_entry, height=150, disabled=True)
+                                                    break
+                                    
+                                    st.markdown("---")
+                        
+                        st.session_state.entries = unique_entries
+                        st.success(f"{len(unique_entries)} unique entries ready to save")
+                        st.session_state.show_save_section = True
 
-                                    const lastName = firstLine.split(' ').pop();
+        if st.session_state.get('show_save_section', False) and st.session_state.entries:
+            st.subheader("Processed Entries")
+            st.info(f"Total unique entries ready to save: {len(st.session_state.entries)}")
+            
+            if st.button("Download Unique Entries"):
+                entries_text = "\n\n".join(st.session_state.entries)
+                st.download_button(
+                    "Download Now",
+                    entries_text,
+                    f"{st.session_state.upload_filename}_unique_entries.txt"
+                )
+            
+            if st.button("Save to Database"):
+                status_text = st.empty()
+                if save_entries_with_progress(
+                    st.session_state.entries,
+                    st.session_state.upload_journal,
+                    st.session_state.upload_filename,
+                    status_text
+                ):
+                    st.success("Unique entries saved successfully!")
+                    st.session_state.show_save_section = False
 
-                                    if (e.data.includeDearProfessor) {
-                                        const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/;
-                                        const emailLineIndex = lines.findIndex(line => emailRegex.test(line));
-                                        if (emailLineIndex !== -1) {
-                                            const greeting = 'Dear Professor ' + lastName + ',';
-                                            if (e.data.gapOption === 'nil') {
-                                                lines.splice(emailLineIndex + 1, 0, greeting);
-                                            } else {
-                                                lines.splice(emailLineIndex + 1, 0, '', greeting);
+    elif st.session_state.app_mode == "?? Search Database":
+        st.header("?? Search Database")
+        search_col1, search_col2 = st.columns([3, 1])
+        with search_col1:
+            search_query = st.text_input("Search for entries or filenames:", value=st.session_state.search_query)
+        with search_col2:
+            if st.button("Search"):
+                if get_firestore_db():
+                    st.session_state.search_query = search_query
+                    st.session_state.search_results = search_entries(search_query)
+                    st.session_state.show_search_results = True
+
+        if st.session_state.show_search_results and st.session_state.search_results:
+            st.subheader(f"Search Results ({len(st.session_state.search_results)} matches)")
+            
+            sort_col1, sort_col2 = st.columns(2)
+            with sort_col1:
+                sort_by = st.selectbox("Sort by", ["Relevance", "Journal", "Filename"])
+            with sort_col2:
+                sort_order = st.selectbox("Order", ["Descending", "Ascending"])
+            
+            if sort_by == "Journal":
+                st.session_state.search_results.sort(key=lambda x: x["journal"], reverse=(sort_order == "Descending"))
+            elif sort_by == "Filename":
+                st.session_state.search_results.sort(key=lambda x: x["filename"], reverse=(sort_order == "Descending"))
+            
+            for i, result in enumerate(st.session_state.search_results[:50]):
+                with st.container():
+                    st.markdown(f"**Journal:** {result['journal']}  \n**File:** {result['filename']}")
+                    
+                    if result.get("is_file", False):
+                        st.text(f"File: {result['filename']}")
+                        # Direct download without additional button
+                        content, entry_count = download_entries(result["journal"], result["filename"])
+                        if content:
+                            st.download_button(
+                                "?? Download File",
+                                content,
+                                file_name=f"{result['filename']} ({entry_count} entries).txt",
+                                mime="text/plain",
+                                key=f"dl_{i}"
+                            )
+                    else:
+                        if st.session_state.current_edit_entry == result['entry']:
+                            edited_entry = st.text_area("Edit entry:", value=result["entry"], height=150, key=f"edit_{i}")
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button("Save", key=f"save_{i}"):
+                                    if update_entry(result["journal"], result["filename"], result["entry"], edited_entry):
+                                        st.success("Entry updated successfully!")
+                                        st.session_state.current_edit_entry = None
+                                        st.session_state.search_results = search_entries(st.session_state.search_query)
+                            with col2:
+                                if st.button("Cancel", key=f"cancel_{i}"):
+                                    st.session_state.current_edit_entry = None
+                        else:
+                            st.text_area("Entry:", value=result["entry"], height=150, key=f"view_{i}", disabled=True)
+                    
+                    col1, col2 = st.columns([1, 1])
+                    with col1:
+                        if not result.get("is_file", False) and st.button("?? Edit", key=f"edit_btn_{i}"):
+                            st.session_state.current_edit_entry = result['entry']
+                    with col2:
+                        if not result.get("is_file", False) and st.button("??? Delete", key=f"delete_{i}"):
+                            st.session_state.deleting_entry = result
+                    st.markdown("---")
+
+    elif st.session_state.app_mode == "?? Manage Journals":
+        st.header("?? Manage Journals")
+        
+        tab1, tab2 = st.tabs(["View Journals", "Create New Journal"])
+        
+        with tab1:
+            st.subheader("Available Journals")
+            st.session_state.available_journals = get_available_journals()
+            
+            if not st.session_state.available_journals:
+                st.info("No journals available. Create a new journal first.")
+            else:
+                for journal in st.session_state.available_journals:
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.write(f"?? {journal}")
+                    with col2:
+                        if st.button("???", key=f"del_journal_{journal}"):
+                            st.session_state.deleting_journal = journal
+                
+                if st.session_state.deleting_journal:
+                    st.warning(f"Are you sure you want to delete the journal '{st.session_state.deleting_journal}' and all its files?")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("Yes, Delete Journal"):
+                            if delete_journal(st.session_state.deleting_journal):
+                                st.success("Journal deleted successfully!")
+                                st.session_state.deleting_journal = None
+                                st.rerun()
+                    with col2:
+                        if st.button("Cancel"):
+                            st.session_state.deleting_journal = None
+                
+                st.markdown("---")
+                
+                selected_journal = st.selectbox("Select Journal to View Files:", st.session_state.available_journals)
+                
+                if selected_journal:
+                    files = get_journal_files(selected_journal)
+                    if files:
+                        st.subheader(f"Files in {selected_journal}")
+                        
+                        for i, file in enumerate(files):
+                            try:
+                                expander = st.expander(f"{file['name']} ({file['entry_count']} entries)")
+                                with expander:
+                                    col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                                    with col1:
+                                        last_updated = file["last_updated"]
+                                        if isinstance(last_updated, datetime):
+                                            st.write(f"Last updated: {last_updated.strftime('%d-%b-%Y %H:%M')}")
+                                        else:
+                                            st.write("Last updated: Unknown")
+                                    
+                                    with col2:
+                                        # Direct download without additional button
+                                        content, entry_count = download_entries(selected_journal, file['name'])
+                                        if content:
+                                            st.download_button(
+                                                "?? Download",
+                                                content,
+                                                file_name=f"{file['name']} ({entry_count} entries).txt",
+                                                mime="text/plain",
+                                                key=f"dl_file_{i}"
+                                            )
+                                    
+                                    with col3:
+                                        if st.button("?? Rename", key=f"rename_{i}"):
+                                            st.session_state.renaming_file = {
+                                                "journal": selected_journal,
+                                                "filename": file['name']
                                             }
-                                        }
-                                    }
-
-                                    const text = lines.join('\\n');
-                                    const html = highlightErrors(text.replace(/\\n/g, '<br>'));
-                                    const hasError = html.includes('error');
+                                            st.session_state.new_filename = file['name']
                                     
-                                    results.push({
-                                        index: e.data.index + i,
-                                        text: text,
-                                        html: html,
-                                        hasError: hasError,
-                                        isRussia: paragraph.includes('Russia')
-                                    });
-                                }
-                            }
-                            
-                            self.postMessage({
-                                type: 'processedChunk',
-                                processed: results,
-                                isLast: e.data.isLast
-                            });
-                        }
-                    };
-                `;
-
-                const blob = new Blob([workerCode], { type: 'application/javascript' });
-                worker = new Worker(URL.createObjectURL(blob));
+                                    with col4:
+                                        if st.button("??? Delete", key=f"del_file_{i}"):
+                                            st.session_state.deleting_file = {
+                                                "journal": selected_journal,
+                                                "filename": file['name']
+                                            }
+                                    
+                                    if st.button("?? Move to Another Journal", key=f"move_{i}"):
+                                        st.session_state.moving_file = {
+                                            "journal": selected_journal,
+                                            "filename": file['name']
+                                        }
+                                        st.session_state.target_journal = ""
+                            except Exception as e:
+                                st.error(f"Error displaying file: {str(e)}")
+                    else:
+                        st.info(f"No files yet in {selected_journal}")
+        
+        with tab2:
+            st.subheader("Create New Journal")
+            with st.form(key="new_journal_form"):
+                journal_name = st.text_input("Journal Name:")
+                submit_button = st.form_submit_button("Create Journal")
                 
-                worker.onmessage = function(e) {
-                    if (e.data.type === 'processedChunk') {
-                        processWorkerResponse(e.data);
-                    }
-                };
-            }
-        }
+                if submit_button:
+                    if journal_name.strip():
+                        if create_journal(journal_name):
+                            st.success(f"Journal '{journal_name}' created successfully!")
+                            st.session_state.available_journals = get_available_journals()
+                        else:
+                            st.error("Failed to create journal")
+                    else:
+                        st.warning("Please enter a journal name")
 
-        // Process worker response
-        function processWorkerResponse(data) {
-            const incompleteContainer = document.getElementById('incompleteText');
+    # Handle modals and dialogs
+    if st.session_state.deleting_entry:
+        result = st.session_state.deleting_entry
+        st.warning(f"Are you sure you want to delete this entry from {result['full_path']}?")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Confirm Delete"):
+                if delete_entry(result["journal"], result["filename"], result["entry"]):
+                    st.success("Entry deleted successfully!")
+                    st.session_state.deleting_entry = None
+                    st.session_state.search_results = search_entries(st.session_state.search_query)
+        with col2:
+            if st.button("Cancel"):
+                st.session_state.deleting_entry = None
+
+    if st.session_state.deleting_file:
+        file_info = st.session_state.deleting_file
+        st.warning(f"Are you sure you want to delete '{file_info['filename']}' from {file_info['journal']}?")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Yes, Delete"):
+                if delete_file(file_info["journal"], file_info["filename"]):
+                    st.success("File deleted successfully!")
+                    st.session_state.deleting_file = None
+                    st.rerun()
+        with col2:
+            if st.button("Cancel"):
+                st.session_state.deleting_file = None
+
+    if st.session_state.renaming_file:
+        file_info = st.session_state.renaming_file
+        st.warning(f"Rename file '{file_info['filename']}' in {file_info['journal']}")
+        new_name = st.text_input("New filename:", value=st.session_state.new_filename)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Confirm Rename"):
+                if new_name.strip() and new_name != file_info['filename']:
+                    if rename_file(file_info["journal"], file_info["filename"], new_name):
+                        st.success("File renamed successfully!")
+                        st.session_state.renaming_file = None
+                        st.rerun()
+                else:
+                    st.warning("Please enter a new filename")
+        with col2:
+            if st.button("Cancel"):
+                st.session_state.renaming_file = None
+
+    if st.session_state.moving_file:
+        file_info = st.session_state.moving_file
+        st.warning(f"Move file '{file_info['filename']}' from {file_info['journal']} to another journal")
+        target_journal = st.selectbox(
+            "Select target journal:",
+            [j for j in st.session_state.available_journals if j != file_info["journal"]]
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Confirm Move"):
+                if target_journal:
+                    if move_file(file_info["journal"], file_info["filename"], target_journal):
+                        st.success("File moved successfully!")
+                        st.session_state.moving_file = None
+                        st.rerun()
+                else:
+                    st.warning("Please select a target journal")
+        with col2:
+            if st.button("Cancel"):
+                st.session_state.moving_file = None
+
+# Main app flow
+if __name__ == "__main__":
+    # Update last activity time periodically
+    if time.time() - st.session_state.last_activity_time > 30:
+        st.session_state.last_activity_time = time.time()
+    
+    if not st.session_state.authenticated:
+        show_login_page()
+    else:
+        apply_theme_settings()
+        
+        with st.sidebar:
+            show_connection_status()
             
-            data.processed.forEach(item => {
-                if (item.hasError) {
-                    incompleteContainer.value += item.text.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '') + '\n\n';
-                } else {
-                    allParagraphs[item.index] = {
-                        id: item.index,
-                        html: item.html,
-                        text: item.text,
-                        isRussia: item.isRussia
-                    };
-                }
-            });
+            st.markdown("---")
             
-            if (data.isLast) {
-                finalizeProcessing();
-            }
-        }
-
-        // Initialize country states and groups from localStorage
-        function initializeCountryStates() {
-            const savedStates = localStorage.getItem(`countryStates_${currentUser}`);
-            if (savedStates) {
-                countryStates = JSON.parse(savedStates);
-            } else {
-                countryList.forEach(country => {
-                    countryStates[country] = true;
-                });
-            }
-        }
-
-        function initializeCountryGroups() {
-            const savedGroups = localStorage.getItem(`countryGroups_${currentUser}`);
-            if (savedGroups) {
-                countryGroups = JSON.parse(savedGroups);
-            } else {
-                countryGroups = {
-                    "Asia": ["India", "China", "Japan", "South Korea", "Singapore", "Thailand", "Vietnam", "Indonesia", "Malaysia", "Philippines"],
-                    "Europe": ["France", "Germany", "Italy", "Spain", "United Kingdom", "UK", "U.K.", "Switzerland", "Netherlands", "Belgium"],
-                    "Middle East": ["Saudi Arabia", "UAE", "U.A.E.", "Qatar", "Kuwait", "Oman", "Bahrain", "Israel"],
-                    "Africa": ["South Africa", "Egypt", "Nigeria", "Kenya", "Ghana", "Morocco", "Tunisia"],
-                    "Americas": ["United States", "USA", "U.S.A.", "Canada", "Brazil", "Brasil", "Mexico", "Argentina", "Chile", "Colombia"]
-                };
-            }
-        }
-
-        function saveCountryStates() {
-            if (currentUser) {
-                localStorage.setItem(`countryStates_${currentUser}`, JSON.stringify(countryStates));
-            }
-        }
-
-        function saveCountryGroups() {
-            if (currentUser) {
-                localStorage.setItem(`countryGroups_${currentUser}`, JSON.stringify(countryGroups));
-            }
-        }
-
-        function renderCountryFilters() {
-            const container = document.getElementById('countryListContainer');
-            container.innerHTML = '';
-
-            const sortedCountries = Object.keys(countryStates).sort((a, b) => a.localeCompare(b));
-            const countryCounts = countCountryOccurrences();
-
-            sortedCountries.forEach(country => {
-                const countryItem = document.createElement('div');
-                countryItem.className = 'country-item';
-
-                const toggle = document.createElement('label');
-                toggle.className = 'small-switch';
-                toggle.innerHTML = `
-                    <input type="checkbox" ${countryStates[country] ? 'checked' : ''} onchange="toggleCountry('${country}', this.checked)">
-                    <span class="small-slider"></span>
-                `;
-
-                const name = document.createElement('span');
-                name.className = 'country-name';
-                name.textContent = country;
-
-                const count = document.createElement('span');
-                count.className = 'country-count';
-                count.textContent = `(${countryCounts[country] || 0})`;
-
-                countryItem.appendChild(toggle);
-                countryItem.appendChild(name);
-                countryItem.appendChild(count);
-                container.appendChild(countryItem);
-            });
-        }
-
-        function renderCountryGroups() {
-            const container = document.getElementById('countryGroups');
-            container.innerHTML = '';
-
-            Object.keys(countryGroups).forEach(groupName => {
-                const groupItem = document.createElement('div');
-                groupItem.className = 'group-item';
-
-                const toggle = document.createElement('label');
-                toggle.className = 'small-switch';
-                toggle.innerHTML = `
-                    <input type="checkbox" checked onchange="toggleGroup('${groupName}', this.checked)">
-                    <span class="small-slider"></span>
-                `;
-
-                const name = document.createElement('div');
-                name.className = 'group-name';
-                name.textContent = groupName;
-
-                const countries = document.createElement('div');
-                countries.className = 'group-countries';
-                countries.textContent = countryGroups[groupName].join(', ');
-
-                const groupControls = document.createElement('div');
-                groupControls.className = 'group-controls';
-                groupControls.innerHTML = `
-                    <button onclick="editGroup('${groupName}')" class="group-button">Edit</button>
-                    <button onclick="deleteGroup('${groupName}')" class="group-button">Delete</button>
-                `;
-
-                groupItem.appendChild(toggle);
-                groupItem.appendChild(name);
-                groupItem.appendChild(countries);
-                groupItem.appendChild(groupControls);
-                container.appendChild(groupItem);
-            });
-        }
-
-        function toggleCountry(country, enabled) {
-            countryStates[country] = enabled;
-            saveCountryStates();
-            filterCountries();
-        }
-
-        function toggleAllCountries(enable) {
-            for (const country in countryStates) {
-                countryStates[country] = enable;
-            }
-            saveCountryStates();
-            renderCountryFilters();
-            filterCountries();
-        }
-
-        function toggleGroup(groupName, enabled) {
-            countryGroups[groupName].forEach(country => {
-                if (countryStates.hasOwnProperty(country)) {
-                    countryStates[country] = enabled;
-                }
-            });
-            saveCountryStates();
-            renderCountryFilters();
-            filterCountries();
-        }
-
-        function createGroup() {
-            const groupName = document.getElementById('newGroupName').value.trim();
-            if (groupName && !countryGroups[groupName]) {
-                countryGroups[groupName] = [];
-                saveCountryGroups();
-                renderCountryGroups();
-                document.getElementById('newGroupName').value = '';
-            }
-        }
-
-        function editGroup(groupName) {
-            const newName = prompt("Enter new group name:", groupName);
-            if (newName && newName !== groupName) {
-                countryGroups[newName] = countryGroups[groupName];
-                delete countryGroups[groupName];
-                saveCountryGroups();
-                renderCountryGroups();
-            }
+            if st.button("?? Home"):
+                st.session_state.current_module = None
+                st.rerun()
             
-            const newCountries = prompt("Edit countries (comma separated):", countryGroups[groupName].join(', '));
-            if (newCountries !== null) {
-                countryGroups[groupName] = newCountries.split(',').map(c => c.trim()).filter(c => c);
-                saveCountryGroups();
-                renderCountryGroups();
-            }
-        }
-
-        function deleteGroup(groupName) {
-            if (confirm(`Are you sure you want to delete the group "${groupName}"?`)) {
-                delete countryGroups[groupName];
-                saveCountryGroups();
-                renderCountryGroups();
-            }
-        }
-
-        function searchCountries() {
-            const searchTerm = document.getElementById('countrySearch').value.toLowerCase();
-            const countryItems = document.querySelectorAll('.country-item');
+            st.markdown("---")
             
-            countryItems.forEach(item => {
-                const countryName = item.querySelector('.country-name').textContent.toLowerCase();
-                if (countryName.includes(searchTerm)) {
-                    item.style.display = 'flex';
-                } else {
-                    item.style.display = 'none';
-                }
-            });
-        }
-
-        function filterCountries() {
-            const outputContainer = document.getElementById('output');
-            const paragraphs = outputContainer.querySelectorAll('p');
-            
-            paragraphs.forEach(paragraph => {
-                let shouldShow = false;
-                const text = paragraph.innerText;
+            expander = st.expander("?? Settings", expanded=False)
+            with expander:
+                st.subheader("Appearance")
+                new_font_size = st.selectbox(
+                    "Font Size",
+                    ["Small", "Medium", "Large"],
+                    index=["Small", "Medium", "Large"].index(st.session_state.font_size)
+                )
                 
-                for (const country in countryStates) {
-                    if (countryStates[country] && text.includes(country)) {
-                        shouldShow = true;
-                        break;
-                    }
-                }
+                new_theme = st.selectbox(
+                    "Theme",
+                    ["Light", "Dark"],
+                    index=["Light", "Dark"].index(st.session_state.theme)
+                )
                 
-                if (!shouldShow && !Object.values(countryStates).some(state => state)) {
-                    shouldShow = true;
-                }
-                
-                paragraph.style.display = shouldShow ? 'block' : 'none';
-            });
+                if st.button("Save Settings"):
+                    st.session_state.font_size = new_font_size
+                    st.session_state.theme = new_theme
+                    st.session_state.bg_color = "#ffffff" if new_theme == "Light" else "#1a1a1a"
+                    st.success("Settings saved successfully!")
+                    apply_theme_settings()
+                    st.rerun()
             
-            updateCounts();
-        }
-
-        function showSuccessMessage(message) {
-            const successMessage = document.getElementById('successMessage');
-            successMessage.innerText = message;
-            successMessage.style.display = 'block';
-
-            setTimeout(() => {
-                successMessage.style.display = 'none';
-            }, 3000);
-        }
-
-        function saveText() {
-            const inputText = document.getElementById('inputText').value;
-            const roughText = document.getElementById('roughText').value;
-            const outputText = document.getElementById('output').innerHTML;
-            const incompleteText = document.getElementById('incompleteText').value;
-            if (currentUser) {
-                localStorage.setItem(`savedInput_${currentUser}`, inputText);
-                localStorage.setItem(`savedRough_${currentUser}`, roughText);
-                localStorage.setItem(`savedOutput_${currentUser}`, outputText);
-                localStorage.setItem(`savedIncomplete_${currentUser}`, incompleteText);
-                localStorage.setItem(`dailyAdCount_${currentUser}`, dailyAdCount);
-                localStorage.setItem(`lastCutTime_${currentUser}`, Date.now());
-                localStorage.setItem(`totalParagraphs_${currentUser}`, totalParagraphs);
-                saveSelectedReminders();
-                saveEffectPreferences();
-                saveOperationPreferences();
-                saveFontPreferences();
-                saveGapPreferences();
-                saveCountryStates();
-                saveCountryGroups();
-            }
-        }
-
-        function loadText() {
-            if (currentUser) {
-                const savedInput = localStorage.getItem(`savedInput_${currentUser}`);
-                const savedRough = localStorage.getItem(`savedRough_${currentUser}`);
-                const savedOutput = localStorage.getItem(`savedOutput_${currentUser}`);
-                const savedIncomplete = localStorage.getItem(`savedIncomplete_${currentUser}`);
-                const savedDailyAdCount = localStorage.getItem(`dailyAdCount_${currentUser}`);
-                const lastCutTime = localStorage.getItem(`lastCutTime_${currentUser}`);
-                const savedTotalParagraphs = localStorage.getItem(`totalParagraphs_${currentUser}`);
-                const savedFontStyle = localStorage.getItem(`fontStyle_${currentUser}`);
-                const savedFontSize = localStorage.getItem(`fontSize_${currentUser}`);
-                const savedGapOption = localStorage.getItem(`gapOption_${currentUser}`);
-                
-                if (savedInput) document.getElementById('inputText').value = savedInput;
-                if (savedRough) document.getElementById('roughText').value = savedRough;
-                if (savedOutput) document.getElementById('output').innerHTML = savedOutput;
-                if (savedIncomplete) document.getElementById('incompleteText').value = savedIncomplete;
-                
-                if (savedDailyAdCount && lastCutTime) {
-                    const lastCutDate = new Date(parseInt(lastCutTime, 10));
-                    const currentDate = new Date();
-                    if (lastCutDate.toDateString() === currentDate.toDateString()) {
-                        dailyAdCount = parseInt(savedDailyAdCount, 10);
-                    }
-                }
-                
-                if (savedTotalParagraphs) totalParagraphs = parseInt(savedTotalParagraphs, 10);
-                if (savedFontStyle) document.getElementById('fontStyle').value = savedFontStyle;
-                if (savedFontSize) document.getElementById('fontSize').value = savedFontSize;
-                if (savedGapOption) document.getElementById('gapOption').value = savedGapOption;
-                
-                loadEffectPreferences();
-                loadOperationPreferences();
-                loadSelectedReminders();
-                initializeCountryStates();
-                initializeCountryGroups();
-                updateCounts();
-                updateFont();
-                renderCountryFilters();
-                renderCountryGroups();
-                document.getElementById('rightSidebar').style.display = 'block';
-                document.getElementById('lockButton').style.display = 'inline-block';
-            }
-        }
-
-        function saveFontPreferences() {
-            const fontStyle = document.getElementById('fontStyle').value;
-            const fontSize = document.getElementById('fontSize').value;
-            if (currentUser) {
-                localStorage.setItem(`fontStyle_${currentUser}`, fontStyle);
-                localStorage.setItem(`fontSize_${currentUser}`, fontSize);
-            }
-        }
-
-        function countCountryOccurrences() {
-            const counts = {};
-            allParagraphs.forEach(p => {
-                if (!p) return;
-                countryList.forEach(country => {
-                    if (p.text.includes(country)) {
-                        counts[country] = (counts[country] || 0) + 1;
-                    }
-                });
-            });
-            return counts;
-        }
-
-        function highlightErrors(text) {
-            let modifiedText = text.replace(/\?/g, '<span class="error">?</span>');
-            if (!text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/)) {
-                modifiedText += ' <span class="error">Missing email</span>';
-            }
-            if (!countryList.some(country => text.includes(country))) {
-                modifiedText += ' <span class="error">Missing country</span>';
-            }
-            return modifiedText;
-        }
-
-        function updateCounts() {
-            let adCount = 0;
-            allParagraphs.forEach(p => {
-                if (p) {
-                    const firstLine = p.text.split('\n')[0];
-                    if (firstLine.startsWith('To') || firstLine.startsWith('Professor')) {
-                        adCount += 1;
-                    }
-                }
-            });
-
-            document.getElementById('totalAds').innerText = adCount;
-            document.getElementById('dailyAdCount').innerText = `Total Ads Today: ${dailyAdCount}`;
+            st.markdown("---")
+            st.markdown(f"Logged in as: **{st.session_state.username}**")
             
-            updateProgressBar(dailyAdCount);
-            updateRemainingTime(dailyAdCount);
-        }
-
-        function updateProgressBar(dailyAdCount) {
-            const progressBar = document.getElementById('progressBar');
-            const maxCount = 5000;
-            const percentage = Math.min(dailyAdCount / maxCount, 1) * 100;
-            progressBar.style.width = `${percentage}%`;
-
-            const red = Math.max(255 - Math.floor((dailyAdCount / maxCount) * 255), 0);
-            const green = Math.min(Math.floor((dailyAdCount / maxCount) * 255), 255);
-            progressBar.style.backgroundColor = `rgb(${red},${green},0)`;
-        }
-
-        function updateRemainingTime(dailyAdCount) {
-            const remainingEntries = totalParagraphs - dailyAdCount;
-            const remainingTimeInMinutes = remainingEntries / 25;
-            const remainingTimeInSeconds = remainingTimeInMinutes * 60;
-            const hours = Math.floor(remainingTimeInSeconds / 3600);
-            const minutes = Math.floor((remainingTimeInSeconds % 3600) / 60);
-
-            const percentageCompleted = Math.min((dailyAdCount / totalParagraphs) * 100, 100).toFixed(2);
-
-            document.getElementById('remainingTimeText').innerText = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-            document.getElementById('completionPercentage').innerText = `${percentageCompleted}%`;
-        }
-
-        // Initialize the toggle state from localStorage
-        document.addEventListener('DOMContentLoaded', () => {
-            const savedState = localStorage.getItem('includeDearProfessor');
-            if (savedState !== null) {
-                includeDearProfessor = savedState === 'true';
-                document.getElementById('dearProfessorToggle').checked = includeDearProfessor;
-                updateToggleLabel();
-            }
-            
-            // Initialize collapsible sections
-            const coll = document.getElementsByClassName("collapsible");
-            for (let i = 0; i < coll.length; i++) {
-                coll[i].addEventListener("click", function() {
-                    this.classList.toggle("active");
-                    const content = this.nextElementSibling;
-                    if (content.style.maxHeight) {
-                        content.style.maxHeight = null;
-                    } else {
-                        content.style.maxHeight = content.scrollHeight + "px";
-                    } 
-                });
-            }
-            
-            // Initialize web worker
-            initWorker();
-        });
-
-        function toggleDearProfessor() {
-            includeDearProfessor = document.getElementById('dearProfessorToggle').checked;
-            localStorage.setItem('includeDearProfessor', includeDearProfessor);
-            updateToggleLabel();
-        }
-
-        function updateToggleLabel() {
-            const label = document.getElementById('dearProfessorLabel');
-            label.innerText = includeDearProfessor ? '✔ "Dear Professor"' : '✘ "Dear Professor"';
-        }
-
-        function processText() {
-            if (isProcessing) return;
-            
-            isProcessing = true;
-            document.getElementById('loadingIndicator').style.display = 'inline';
-            
-            const inputText = document.getElementById('inputText').value;
-            const paragraphs = inputText.split(/\n\s*\n/);
-            totalParagraphs = paragraphs.length;
-            
-            // Clear existing content
-            const outputContainer = document.getElementById('output');
-            outputContainer.innerHTML = '<p id="cursorStart">Place your cursor here</p>';
-            document.getElementById('incompleteText').value = '';
-            
-            // Reset data structures
-            allParagraphs = [];
-            renderedParagraphs = [];
-            visibleStartIndex = 0;
-            
-            // Process in chunks using web worker if available
-            if (worker) {
-                const chunkSize = 1000;
-                for (let i = 0; i < paragraphs.length; i += chunkSize) {
-                    const chunk = paragraphs.slice(i, i + chunkSize);
-                    worker.postMessage({
-                        type: 'processChunk',
-                        chunk: chunk,
-                        includeDearProfessor: includeDearProfessor,
-                        gapOption: document.getElementById('gapOption').value,
-                        index: i,
-                        isLast: (i + chunkSize >= paragraphs.length)
-                    });
-                }
-            } else {
-                // Fallback to main thread processing
-                processChunkMainThread(paragraphs, 0);
-            }
-        }
-
-        // Main thread processing fallback
-        function processChunkMainThread(paragraphs, startIndex) {
-            const chunkSize = PROCESSING_CHUNK_SIZE;
-            const endIndex = Math.min(startIndex + chunkSize, paragraphs.length);
-            const incompleteContainer = document.getElementById('incompleteText');
-            
-            for (let i = startIndex; i < endIndex; i++) {
-                let paragraph = paragraphs[i].trim();
-                if (paragraph !== '') {
-                    const processed = processSingleParagraph(paragraph);
-                    
-                    if (processed.hasError) {
-                        incompleteContainer.value += processed.text + '\n\n';
-                    } else {
-                        allParagraphs[i] = {
-                            id: i,
-                            html: processed.html,
-                            text: processed.text,
-                            isRussia: processed.isRussia
-                        };
-                    }
-                }
-            }
-            
-            if (endIndex < paragraphs.length) {
-                setTimeout(() => processChunkMainThread(paragraphs, endIndex), PROCESSING_DELAY);
-            } else {
-                finalizeProcessing();
-            }
-        }
-
-        // Process single paragraph (reusable function)
-        function processSingleParagraph(paragraph) {
-            const lines = paragraph.split('\n');
-            let firstLine = lines[0].trim();
-            const result = {
-                hasError: false,
-                isRussia: false,
-                text: '',
-                html: ''
-            };
-
-            // Ensure the first line starts with "Professor"
-            if (!firstLine.startsWith('Professor')) {
-                firstLine = `Professor ${firstLine}`;
-                lines[0] = firstLine;
-            }
-
-            let lastName = firstLine.split(' ').pop();
-
-            if (includeDearProfessor) {
-                const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
-                const emailLineIndex = lines.findIndex(line => emailRegex.test(line));
-                if (emailLineIndex !== -1) {
-                    const greeting = `Dear Professor ${lastName},`;
-                    if (document.getElementById('gapOption').value === 'nil') {
-                        lines.splice(emailLineIndex + 1, 0, greeting);
-                    } else {
-                        lines.splice(emailLineIndex + 1, 0, '', greeting);
-                    }
-                }
-            }
-
-            result.text = lines.join('\n');
-            result.html = highlightErrors(result.text.replace(/\n/g, '<br>'));
-            result.hasError = result.html.includes('error');
-            result.isRussia = paragraph.includes('Russia');
-            
-            return result;
-        }
-
-        // Finalize processing
-        function finalizeProcessing() {
-            // Sort allParagraphs (Russia last)
-            allParagraphs.sort((a, b) => {
-                if (!a || !b) return 0;
-                if (a.isRussia && !b.isRussia) return 1;
-                if (!a.isRussia && b.isRussia) return -1;
-                return a.id - b.id;
-            });
-
-            // Render initial visible paragraphs
-            renderVisibleParagraphs();
-            
-            updateCounts();
-            saveText();
-            document.getElementById('lockButton').style.display = 'inline-block';
-            document.getElementById('loadingIndicator').style.display = 'none';
-
-            // Automatically delete unsubscribed entries
-            const deletedCount = deleteUnsubscribedEntries();
-            
-            if (deletedCount > 0) {
-                showPopupNotification(`Deleted ${deletedCount} unsubscribed entries.`);
-            }
-            
-            filterCountries();
-            isProcessing = false;
-        }
-
-        // Render only visible paragraphs
-        function renderVisibleParagraphs() {
-            const outputContainer = document.getElementById('output');
-            const fragment = document.createDocumentFragment();
-            
-            // Clear existing rendered paragraphs
-            renderedParagraphs.forEach(p => {
-                if (p.parentNode === outputContainer) {
-                    outputContainer.removeChild(p);
-                }
-            });
-            renderedParagraphs = [];
-            
-            // Determine visible range
-            const start = Math.max(0, visibleStartIndex);
-            const end = Math.min(allParagraphs.length, visibleStartIndex + MAX_VISIBLE_PARAGRAPHS);
-            
-            // Create new paragraphs
-            for (let i = start; i < end; i++) {
-                if (!allParagraphs[i]) continue;
-                
-                const p = document.createElement('p');
-                p.innerHTML = allParagraphs[i].html;
-                p.dataset.id = allParagraphs[i].id;
-                fragment.appendChild(p);
-                renderedParagraphs.push(p);
-            }
-            
-            outputContainer.appendChild(fragment);
-        }
-
-        // Optimized cutParagraph function
-        function cutParagraph(paragraph) {
-            if (cutCooldown || !paragraph) return;
-            
-            // Use requestAnimationFrame for smoother performance
-            requestAnimationFrame(() => {
-                const paragraphId = parseInt(paragraph.dataset.id);
-                const paragraphIndex = allParagraphs.findIndex(p => p && p.id === paragraphId);
-                
-                if (paragraphIndex === -1) return;
-                
-                const textToCopy = allParagraphs[paragraphIndex].text;
-                cutHistory.push({
-                    text: textToCopy,
-                    index: paragraphIndex,
-                    element: paragraph
-                });
-
-                const effectType = document.getElementById('effectType').value;
-                const effectsEnabled = document.getElementById('effectsToggle').checked;
-                const textToProcess = textToCopy.replace(/^To\n/, '');
-
-                // Use CSS transforms for animation
-                if (effectsEnabled && effectType !== 'none') {
-                    paragraph.style.transition = 'all 0.1s ease-out';
-                    
-                    switch(effectType) {
-                        case 'fadeOut':
-                            paragraph.style.opacity = '0';
-                            break;
-                        case 'vanish':
-                            paragraph.style.transform = 'scale(0)';
-                            break;
-                        case 'explode':
-                            paragraph.style.transform = 'scale(3)';
-                            paragraph.style.opacity = '0';
-                            break;
-                    }
-                    
-                    // Remove after animation
-                    setTimeout(() => {
-                        removeParagraph(paragraphIndex, textToProcess);
-                    }, 100);
-                } else {
-                    // Immediate removal
-                    removeParagraph(paragraphIndex, textToProcess);
-                }
-            });
-            
-            // Set minimal cooldown
-            cutCooldown = true;
-            setTimeout(() => { cutCooldown = false; }, CUT_COOLDOWN);
-        }
-
-        // Optimized paragraph removal
-        function removeParagraph(index, textToProcess) {
-            // Remove from our data structure
-            allParagraphs.splice(index, 1);
-            
-            // Update the input text
-            const inputText = document.getElementById('inputText').value;
-            document.getElementById('inputText').value = inputText.replace(textToProcess.split('\nDear Professor')[0], '').trim();
-            
-            // Update counters
-            dailyAdCount++;
-            updateCounts();
-            saveText();
-            
-            // Re-render visible paragraphs
-            renderVisibleParagraphs();
-            
-            // Show undo button
-            document.getElementById('undoButton').style.display = 'block';
-            
-            // Copy to clipboard
-            copyToClipboard(textToProcess);
-            
-            // Focus output
-            document.getElementById('output').focus();
-        }
-
-        // Optimized clipboard copy
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).catch(err => {
-                // Fallback for older browsers
-                const textarea = document.createElement('textarea');
-                textarea.value = text;
-                textarea.style.position = 'fixed';
-                document.body.appendChild(textarea);
-                textarea.select();
-                document.execCommand('copy');
-                document.body.removeChild(textarea);
-            });
-        }
-
-        // Optimized undoLastCut
-        function undoLastCut() {
-            if (cutHistory.length === 0) return;
-            
-            const lastCut = cutHistory.pop();
-            
-            // Restore to data structure
-            allParagraphs.splice(lastCut.index, 0, {
-                id: lastCut.index,
-                html: lastCut.element.innerHTML,
-                text: lastCut.text,
-                isRussia: lastCut.text.includes('Russia')
-            });
-            
-            // Restore to input text
-            const inputText = document.getElementById('inputText').value;
-            document.getElementById('inputText').value = `${lastCut.text}\n\n${inputText}`.trim();
-            
-            // Update counters
-            dailyAdCount--;
-            updateCounts();
-            saveText();
-            
-            // Re-render
-            renderVisibleParagraphs();
-            
-            if (cutHistory.length === 0) {
-                document.getElementById('undoButton').style.display = 'none';
-            }
-        }
-
-        function handleCursorMovement(event) {
-            if (isLocked) return;
-            
-            const selection = window.getSelection();
-            if (selection.rangeCount > 0) {
-                const range = selection.getRangeAt(0);
-                const container = range.commonAncestorContainer;
-
-                let paragraph = container;
-                while (paragraph && paragraph.nodeName !== 'P') {
-                    paragraph = paragraph.parentNode;
-                }
-
-                if (paragraph && paragraph.textContent.includes('Professor')) {
-                    cutParagraph(paragraph);
-                    document.getElementById('output').focus();
-                }
-            }
-        }
-
-        function handleMouseClick(event) {
-            if (isLocked) return;
-            
-            const cutOption = document.querySelector('input[name="cutOption"]:checked').value;
-            if (cutOption === 'mouse') {
-                handleCursorMovement(event);
-            }
-        }
-
-        function startMonitoring() {
-            const cutOption = document.querySelector('input[name="cutOption"]:checked').value;
-            if (cutOption === 'keyboard') {
-                document.addEventListener('keyup', handleCursorMovement);
-            } else {
-                document.removeEventListener('keyup', handleCursorMovement);
-            }
-        }
-
-        function updateFont() {
-            const fontStyle = document.getElementById('fontStyle').value;
-            const fontSize = document.getElementById('fontSize').value;
-            document.getElementById('output').style.fontFamily = fontStyle;
-            document.getElementById('output').style.fontSize = `${fontSize}px`;
-            saveFontPreferences();
-        }
-
-        function saveGapPreferences() {
-            const gapOption = document.getElementById('gapOption').value;
-            if (currentUser) {
-                localStorage.setItem(`gapOption_${currentUser}`, gapOption);
-            }
-        }
-
-        function toggleLock() {
-            const lockButton = document.getElementById('lockButton');
-            const interactiveElements = document.querySelectorAll('input, button, textarea, select');
-            isLocked = !isLocked;
-
-            if (isLocked) {
-                lockButton.innerHTML = 'Unlock';
-                lockButton.classList.add('locked');
-                interactiveElements.forEach(element => {
-                    if (element.id !== 'output' && element.id !== 'undoButton' && element.id !== 'lockButton') {
-                        element.disabled = true;
-                    }
-                });
-                document.body.classList.add('scroll-locked');
-            } else {
-                lockButton.innerHTML = 'Lock';
-                lockButton.classList.remove('locked');
-                interactiveElements.forEach(element => {
-                    if (element.id !== 'output' && element.id !== 'undoButton' && element.id !== 'lockButton') {
-                        element.disabled = false;
-                    }
-                });
-                document.body.classList.remove('scroll-locked');
-            }
-        }
-
-        function toggleBox(boxId) {
-            const box = document.getElementById(boxId);
-            const toggleSymbol = document.getElementById(boxId + 'Toggle');
-
-            if (box.style.display === 'none' || box.style.display === '') {
-                box.style.display = 'block';
-                toggleSymbol.innerText = '[-]';
-            } else {
-                box.style.display = 'none';
-                toggleSymbol.innerText = '[+]';
-            }
-        }
-
-        function login() {
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-
-            if (username && password) {
-                currentUser = `${username}_${password}`;
-                document.querySelector('.login-container').style.display = 'none';
-                document.querySelector('.font-controls').style.display = 'block';
-                document.querySelectorAll('.input-container').forEach(container => container.style.display = 'block');
-                document.querySelector('.top-controls').style.display = 'flex';
-                document.getElementById('adCount').style.display = 'block';
-                document.getElementById('dailyAdCount').style.display = 'block';
-                document.getElementById('remainingTime').style.display = 'block';
-                document.getElementById('countryCount').style.display = 'block';
-                document.getElementById('output').style.display = 'block';
-                document.getElementById('userControls').style.display = 'flex';
-                document.getElementById('loggedInUser').innerText = username;
-                loadText();
-            } else {
-                alert('Please enter both username and password.');
-            }
-        }
-
-        function logout() {
-            currentUser = null;
-            document.querySelector('.login-container').style.display = 'block';
-            document.querySelector('.font-controls').style.display = 'none';
-            document.querySelectorAll('.input-container').forEach(container => container.style.display = 'none');
-            document.querySelector('.top-controls').style.display = 'none';
-            document.getElementById('adCount').style.display = 'none';
-            document.getElementById('dailyAdCount').style.display = 'none';
-            document.getElementById('remainingTime').style.display = 'none';
-            document.getElementById('countryCount').style.display = 'none';
-            document.getElementById('output').style.display = 'none';
-            document.getElementById('userControls').style.display = 'none';
-        }
-
-        document.getElementById('output').addEventListener('click', function(event) {
-            if (event.target.id === 'cursorStart') {
-                startMonitoring();
-            } else {
-                handleMouseClick(event);
-            }
-        });
-
-        document.querySelectorAll('input[name="cutOption"]').forEach(option => {
-            option.addEventListener('change', saveOperationPreferences);
-        });
-
-        function checkDailyReset() {
-            const now = new Date();
-            const lastCutTime = localStorage.getItem(`lastCutTime_${currentUser}`);
-            if (lastCutTime) {
-                const lastCutDate = new Date(parseInt(lastCutTime, 10));
-                if (lastCutDate.toDateString() !== now.toDateString()) {
-                    dailyAdCount = 0;
-                    localStorage.setItem(`dailyAdCount_${currentUser}`, dailyAdCount);
-                }
-            }
-        }
-
-        setInterval(checkDailyReset, 60000);
-
-        // Function to display the current time
-        function updateTime() {
-            const now = new Date();
-            const hours = now.getHours().toString().padStart(2, '0');
-            const minutes = now.getMinutes().toString().padStart(2, '0');
-            const seconds = now.getSeconds().toString().padStart(2, '0');
-            document.getElementById('currentTime').textContent = `${hours}:${minutes}:${seconds}`;
-        }
-
-        // Update time every second
-        setInterval(updateTime, 1000);
-
-        // Function to check if the selected time slot matches the current time
-        function checkReminders() {
-            const now = new Date();
-            const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-
-            document.querySelectorAll('.reminder-slots li.selected').forEach(slot => {
-                if (slot.dataset.time === currentTime) {
-                    showPopup();
-                    showNotification('Ad Reminder', `It's time to send ads for ${slot.dataset.time}`);
-                    blinkBrowserIcon();
-                }
-            });
-        }
-
-        // Check reminders every minute
-        setInterval(checkReminders, 60000);
-
-        // Show the reminder popup
-        function showPopup() {
-            document.getElementById('reminderPopup').style.display = 'block';
-            blinkTab();
-        }
-
-        // Dismiss the reminder popup
-        function dismissPopup() {
-            document.getElementById('reminderPopup').style.display = 'none';
-            document.title = originalTitle;
-            clearInterval(blinkInterval);
-        }
-
-        // Handle slot selection and saving
-        document.querySelectorAll('.reminder-slots li').forEach(slot => {
-            slot.addEventListener('click', () => {
-                slot.classList.toggle('selected');
-                saveSelectedReminders();
-            });
-        });
-
-        function saveSelectedReminders() {
-            const selectedSlots = [];
-            document.querySelectorAll('.reminder-slots li.selected').forEach(slot => {
-                selectedSlots.push(slot.dataset.time);
-            });
-            localStorage.setItem(`selectedReminders_${currentUser}`, JSON.stringify(selectedSlots));
-        }
-
-        function loadSelectedReminders() {
-            const savedSlots = localStorage.getItem(`selectedReminders_${currentUser}`);
-            if (savedSlots) {
-                const selectedSlots = JSON.parse(savedSlots);
-                document.querySelectorAll('.reminder-slots li').forEach(slot => {
-                    if (selectedSlots.includes(slot.dataset.time)) {
-                        slot.classList.add('selected');
-                    }
-                });
-            }
-        }
-
-        // Blink tab title when minimized
-        let originalTitle = document.title;
-        let blinkInterval;
-
-        function blinkTab() {
-            let isOriginalTitle = true;
-            blinkInterval = setInterval(() => {
-                document.title = isOriginalTitle ? '?? Reminder: Send Ads!' : originalTitle;
-                isOriginalTitle = !isOriginalTitle;
-            }, 1000);
-        }
-
-        // Toggle Fullscreen Mode
-        function toggleFullScreen() {
-            if (!document.fullscreenElement) {
-                document.documentElement.requestFullscreen();
-                document.querySelector('.fullscreen-button').textContent = 'Normal Screen';
-            } else if (document.exitFullscreen) {
-                document.exitFullscreen();
-                document.querySelector('.fullscreen-button').textContent = 'Full Screen';
-            }
-        }
-
-        // Show Desktop Notification
-        function showNotification(title, body) {
-            if (Notification.permission === 'granted') {
-                new Notification(title, { body });
-            } else if (Notification.permission !== 'denied') {
-                Notification.requestPermission().then(permission => {
-                    if (permission === 'granted') {
-                        new Notification(title, { body });
-                    }
-                });
-            }
-        }
-
-        // Blink browser icon
-        function blinkBrowserIcon() {
-            if (document.hidden) {
-                const favicon = document.querySelector('link[rel="icon"]');
-                const originalIcon = favicon.href;
-                let isOriginalIcon = true;
-                const attentionIcon = 'https://upload.wikimedia.org/wikipedia/commons/thumb/6/65/Alarm_bell.png/600px-Alarm_bell.png';
-
-                const blinkFavicon = setInterval(() => {
-                    favicon.href = isOriginalIcon ? attentionIcon : originalIcon;
-                    isOriginalIcon = !isOriginalIcon;
-                }, 500);
-
-                document.addEventListener('visibilitychange', () => {
-                    if (!document.hidden) {
-                        clearInterval(blinkFavicon);
-                        favicon.href = originalIcon;
-                    }
-                });
-            }
-        }
-
-        // Request Notification permission on page load
-        document.addEventListener('DOMContentLoaded', () => {
-            if (Notification.permission !== 'granted') {
-                Notification.requestPermission();
-            }
-        });
-
-        // Copy incomplete entries to clipboard
-        function copyIncompleteEntries() {
-            const incompleteText = document.getElementById('incompleteText').value;
-            const tempTextarea = document.createElement('textarea');
-            tempTextarea.style.position = 'fixed';
-            tempTextarea.style.opacity = '0';
-            tempTextarea.value = incompleteText;
-            document.body.appendChild(tempTextarea);
-            tempTextarea.select();
-            document.execCommand('copy');
-            document.body.removeChild(tempTextarea);
-            alert('Incomplete entries copied to clipboard!');
-        }
-
-        // Handle scrolling lock and display notice
-        document.addEventListener('wheel', function(event) {
-            if (isLocked) {
-                event.preventDefault();
-                const scrollLockNotice = document.getElementById('scrollLockNotice');
-                scrollLockNotice.style.display = 'block';
-                setTimeout(() => {
-                    scrollLockNotice.style.display = 'none';
-                }, 2000);
-            }
-        }, { passive: false });
-
-        function saveEffectPreferences() {
-            const effectsEnabled = document.getElementById('effectsToggle').checked;
-            const effectType = document.getElementById('effectType').value;
-            if (currentUser) {
-                localStorage.setItem(`effectsEnabled_${currentUser}`, effectsEnabled);
-                localStorage.setItem(`effectType_${currentUser}`, effectType);
-            }
-        }
-
-        function loadEffectPreferences() {
-            const savedEffectsEnabled = localStorage.getItem(`effectsEnabled_${currentUser}`);
-            const savedEffectType = localStorage.getItem(`effectType_${currentUser}`);
-            if (savedEffectsEnabled) {
-                document.getElementById('effectsToggle').checked = savedEffectsEnabled === 'true';
-            }
-            if (savedEffectType) {
-                document.getElementById('effectType').value = savedEffectType;
-            }
-        }
-
-        function saveOperationPreferences() {
-            const selectedOption = document.querySelector('input[name="cutOption"]:checked').value;
-            if (currentUser) {
-                localStorage.setItem(`operationMode_${currentUser}`, selectedOption);
-            }
-        }
-
-        function loadOperationPreferences() {
-            const savedOperationMode = localStorage.getItem(`operationMode_${currentUser}`);
-            if (savedOperationMode) {
-                document.querySelector(`input[name="cutOption"][value="${savedOperationMode}"]`).checked = true;
-            }
-        }
-
-        function showPopupNotification(message) {
-            const popup = document.createElement('div');
-            popup.style.cssText = `
-                position: fixed;
-                top: 20%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                background-color: #1171ba;
-                color: white;
-                padding: 20px;
-                border-radius: 8px;
-                box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
-                z-index: 1000;
-                text-align: center;
-                font-size: 18px;
-                font-weight: bold;
-            `;
-            popup.innerText = message;
-
-            const closeButton = document.createElement('button');
-            closeButton.innerText = 'OK';
-            closeButton.style.cssText = `
-                margin-top: 10px;
-                padding: 10px 20px;
-                background-color: white;
-                color: #1171ba;
-                border: none;
-                border-radius: 5px;
-                cursor: pointer;
-                font-size: 16px;
-            `;
-            closeButton.onclick = () => {
-                popup.remove();
-            };
-
-            popup.appendChild(closeButton);
-            document.body.appendChild(popup);
-        }
-
-        function clearMemory() {
-            const password = prompt('Please enter the password to clear memory, unsubscribed email data will also be deleted:');
-            if (password === 'cleanall0') {
-                localStorage.clear();
-                alert('Memory cleared!');
-            } else {
-                alert('Incorrect password. Memory not cleared.');
-            }
-        }
-
-        function saveUnsubscribedEmail() {
-            const email = document.getElementById('unsubscribedEmail').value.trim().toLowerCase();
-            if (email) {
-                addUnsubscribedEmail(email);
-                document.getElementById('unsubscribedEmail').value = '';
-                showSuccessMessage('Email saved successfully!');
-                processText();
-            }
-        }
-
-        function addUnsubscribedEmail(email) {
-            const emails = JSON.parse(localStorage.getItem('permanentUnsubscribedEmails')) || [];
-            if (!emails.includes(email)) {
-                emails.push(email);
-                localStorage.setItem('permanentUnsubscribedEmails', JSON.stringify(emails));
-            }
-        }
-
-        function deleteUnsubscribedEntries() {
-            const unsubscribedEmails = JSON.parse(localStorage.getItem('permanentUnsubscribedEmails')) || [];
-            let deletedCount = 0;
-
-            allParagraphs = allParagraphs.filter(p => {
-                if (!p) return true;
-                
-                let shouldKeep = true;
-                unsubscribedEmails.forEach(email => {
-                    if (p.text.includes(email)) {
-                        shouldKeep = false;
-                        deletedCount++;
-                    }
-                });
-                return shouldKeep;
-            });
-
-            renderVisibleParagraphs();
-            saveText();
-            return deletedCount;
-        }
-    </script>
-</body>
-</html>
+            if st.button("Logout"):
+                st.session_state.authenticated = False
+                st.session_state.username = ""
+                st.session_state.is_admin = False
+                st.session_state.current_module = None
+                st.rerun()
+
+        if st.session_state.current_module is None:
+            show_main_menu()
+        elif st.session_state.current_module == "Entry":
+            show_entry_module()
+        elif st.session_state.current_module == "PPH Office Tools":
+            st.header("??? PPH Office Tools")
+            st.info("Coming soon!")
+
+    st.markdown("---")
+    st.markdown("**PPH CRM - Contact App Administrator for any help at: [contact@cpsharma.com](mailto:contact@cpsharma.com)**")
