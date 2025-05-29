@@ -73,7 +73,9 @@ def init_session_state():
         'moving_file': None,
         'target_journal': "",
         'last_activity_time': time.time(),
-        'deleting_journal': None
+        'deleting_journal': None,
+        'save_progress': 0,
+        'save_status': ""
     }
     for key, default_value in session_vars.items():
         if key not in st.session_state:
@@ -266,41 +268,224 @@ def get_firestore_db():
         return None
     return firestore.client()
 
+def is_duplicate(name, email):
+    """Check if an author is already in the system using the author_keys collection"""
+    if not name or not email:
+        return False
+        
+    db = get_firestore_db()
+    if not db:
+        return False
+        
+    key = f"{name.lower()}_{email.lower()}"
+    doc = db.collection("author_keys").document(key).get()
+    return doc.exists
+
 def save_entries_with_progress(entries, journal, filename, status_text):
+    """Save entries with progress tracking and duplicate checking"""
     db = get_firestore_db()
     if not db:
         return False
         
     try:
+        # Create journal if it doesn't exist
         journal_ref = db.collection("journals").document(journal)
         if not journal_ref.get().exists:
             journal_ref.set({"created": datetime.now()})
 
-        # Check for duplicates and get only unique entries
-        unique_entries, duplicates = check_duplicates(entries)
+        # Initialize progress tracking
+        total_entries = len(entries)
+        processed_count = 0
+        duplicates_found = 0
+        unique_entries = []
         
-        if duplicates:
-            st.warning(f"Found {len(duplicates)} duplicate entries that will not be saved")
-            with st.expander("?? Duplicate Details"):
-                for key, dup_list in duplicates.items():
-                    name, email = extract_author_email(dup_list[0]["entry"])
-                    st.write(f"**Author:** {name} ({email})")
-                    st.write(f"- Found {len(dup_list)} duplicate(s)")
+        # Setup progress bar
+        progress_bar = st.progress(0)
+        status_text.text("Checking for duplicates...")
         
-        if not unique_entries:
-            st.error("No unique entries to save!")
-            return False
-
-        doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
-        doc_ref.set({
-            "entries": unique_entries,
-            "last_updated": datetime.now(),
-            "entry_count": len(unique_entries)
-        })
+        # Process entries in batches
+        batch_size = 50
+        batch = db.batch()
+        author_keys_batch = db.batch()
+        
+        for i, entry in enumerate(entries):
+            # Update progress
+            progress = int((i + 1) / total_entries * 100)
+            progress_bar.progress(progress)
+            status_text.text(f"Processing {i+1}/{total_entries} ({progress}%) - {duplicates_found} duplicates found")
+            
+            # Extract author info
+            name, email = extract_author_email(entry)
+            
+            if not name or not email:
+                continue  # Skip invalid entries
+                
+            # Check for duplicates using the optimized method
+            if is_duplicate(name, email):
+                duplicates_found += 1
+                continue
+                
+            # Add to unique entries
+            unique_entries.append(entry)
+            
+            # Create author key
+            key = f"{name.lower()}_{email.lower()}"
+            author_key_ref = db.collection("author_keys").document(key)
+            author_keys_batch.set(author_key_ref, {
+                "name": name,
+                "email": email,
+                "journal": journal,
+                "filename": filename,
+                "timestamp": datetime.now()
+            })
+            
+            # Commit batches periodically
+            if i > 0 and i % batch_size == 0:
+                batch.commit()
+                author_keys_batch.commit()
+                batch = db.batch()
+                author_keys_batch = db.batch()
+                
+            # Update last activity to prevent timeout
+            st.session_state.last_activity_time = time.time()
+        
+        # Commit any remaining entries
+        if len(unique_entries) > 0:
+            # Save the entries to the journal file
+            doc_ref = db.collection("journals").document(journal).collection("files").document(filename)
+            batch.set(doc_ref, {
+                "entries": unique_entries,
+                "last_updated": datetime.now(),
+                "entry_count": len(unique_entries)
+            })
+            
+            batch.commit()
+            author_keys_batch.commit()
+        
+        progress_bar.progress(100)
+        
+        if duplicates_found:
+            status_text.text(f"Completed! Saved {len(unique_entries)} entries, skipped {duplicates_found} duplicates")
+        else:
+            status_text.text(f"Completed! Saved {len(unique_entries)} entries")
+            
         return True
+        
     except Exception as e:
         st.error(f"Error saving entries: {str(e)}")
         return False
+
+def check_duplicates(new_entries):
+    """Check for duplicates across all journals using author_keys collection"""
+    unique_entries = []
+    duplicate_info = {}
+    db = get_firestore_db()
+    
+    if not db:
+        return [], {}
+    
+    # Initialize progress tracking
+    total_entries = len(new_entries)
+    processed_count = 0
+    duplicates_found = 0
+    
+    # Setup progress bar if in Streamlit context
+    if 'progress' in globals() or 'progress' in locals():
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        status_text.text("Checking for duplicates...")
+    
+    for i, entry in enumerate(new_entries):
+        # Update progress if in Streamlit context
+        if 'progress_bar' in locals() and 'status_text' in locals():
+            progress = int((i + 1) / total_entries * 100)
+            progress_bar.progress(progress)
+            status_text.text(f"Processing {i+1}/{total_entries} ({progress}%) - {duplicates_found} duplicates found")
+        
+        # Extract author info
+        name, email = extract_author_email(entry)
+        
+        if not name or not email:
+            continue  # Skip invalid entries
+            
+        key = f"{name.lower()}_{email.lower()}"
+        
+        # Check for duplicates using the optimized method
+        if is_duplicate(name, email):
+            # Get existing duplicate info from author_keys
+            doc = db.collection("author_keys").document(key).get()
+            if doc.exists:
+                dup_data = doc.to_dict()
+                if key not in duplicate_info:
+                    duplicate_info[key] = []
+                duplicate_info[key].append({
+                    "entry": entry,
+                    "journal": dup_data.get("journal", "Unknown"),
+                    "filename": dup_data.get("filename", "Unknown"),
+                    "timestamp": dup_data.get("timestamp", datetime.now())
+                })
+            duplicates_found += 1
+        else:
+            # This is a new unique entry
+            unique_entries.append(entry)
+    
+    # Complete progress if in Streamlit context
+    if 'progress_bar' in locals() and 'status_text' in locals():
+        progress_bar.progress(100)
+        if duplicates_found:
+            status_text.text(f"Completed! Found {len(unique_entries)} unique entries, {duplicates_found} duplicates")
+        else:
+            status_text.text(f"Completed! Found {len(unique_entries)} unique entries")
+    
+    return unique_entries, duplicate_info
+
+def delete_all_duplicates():
+    """Delete all duplicate entries across the system, keeping only the latest version of each"""
+    db = get_firestore_db()
+    if not db:
+        return False, "Database connection failed"
+    
+    try:
+        # First collect all author keys
+        author_keys_ref = db.collection("author_keys")
+        author_keys = {}
+        
+        # Get all author keys to identify duplicates
+        for doc in author_keys_ref.stream():
+            data = doc.to_dict()
+            key = doc.id
+            author_keys[key] = data
+        
+        # Identify duplicates (same key but different documents)
+        duplicates_to_remove = []
+        unique_authors = set()
+        
+        for key, data in author_keys.items():
+            if key in unique_authors:
+                duplicates_to_remove.append((key, data))
+            else:
+                unique_authors.add(key)
+        
+        if not duplicates_to_remove:
+            return True, "No duplicates found in author_keys collection"
+        
+        # Remove duplicates from author_keys
+        batch = db.batch()
+        for i, (key, data) in enumerate(duplicates_to_remove):
+            doc_ref = author_keys_ref.document(key)
+            batch.delete(doc_ref)
+            
+            # Commit in batches to avoid timeout
+            if i > 0 and i % 100 == 0:
+                batch.commit()
+                batch = db.batch()
+        
+        batch.commit()
+        
+        return True, f"Removed {len(duplicates_to_remove)} duplicate author keys"
+    
+    except Exception as e:
+        return False, f"Error during duplicate removal: {str(e)}"
 
 def get_available_journals():
     all_journals = []
@@ -349,149 +534,6 @@ def extract_author_email(entry):
     
     return name, email
 
-def check_duplicates(new_entries):
-    """Check for duplicates across all journals and return only unique entries"""
-    unique_entries = []
-    duplicate_info = {}
-    db = get_firestore_db()
-    if not db:
-        return unique_entries, duplicate_info
-        
-    # Create a dictionary to track the latest version of each author
-    author_entries = {}
-    
-    # First check existing entries in database
-    for journal in db.collection("journals").stream():
-        for file in db.collection("journals").document(journal.id).collection("files").stream():
-            existing_entries = file.to_dict().get("entries", [])
-            for existing_entry in existing_entries:
-                name, email = extract_author_email(existing_entry)
-                if name and email:
-                    key = f"{name.lower()}_{email.lower()}"
-                    author_entries[key] = {
-                        "entry": existing_entry,
-                        "journal": journal.id,
-                        "filename": file.id,
-                        "timestamp": file.to_dict().get("last_updated", datetime.now())
-                    }
-    
-    # Now check new entries against existing ones
-    for new_entry in new_entries:
-        name, email = extract_author_email(new_entry)
-        if not name or not email:
-            continue  # Skip invalid entries
-            
-        key = f"{name.lower()}_{email.lower()}"
-        
-        if key in author_entries:
-            # This is a duplicate
-            if key not in duplicate_info:
-                duplicate_info[key] = []
-            duplicate_info[key].append({
-                "entry": new_entry,
-                "journal": "NEW_UPLOAD",
-                "filename": "NEW_UPLOAD",
-                "timestamp": datetime.now()
-            })
-            # Keep the existing entry (don't add to unique_entries)
-        else:
-            # This is a new unique entry
-            unique_entries.append(new_entry)
-            # Add to author_entries to check against subsequent new entries
-            author_entries[key] = {
-                "entry": new_entry,
-                "journal": "NEW_UPLOAD",
-                "filename": "NEW_UPLOAD",
-                "timestamp": datetime.now()
-            }
-    
-    return unique_entries, duplicate_info
-
-def delete_all_duplicates():
-    """Delete all duplicate entries across the system, keeping only the latest version of each"""
-    db = get_firestore_db()
-    if not db:
-        return False, "Database connection failed"
-    
-    try:
-        # First collect all entries across all journals
-        all_entries = {}
-        journals_to_update = {}
-        
-        for journal in db.collection("journals").stream():
-            journal_name = journal.id
-            journals_to_update[journal_name] = {}
-            
-            for file in db.collection("journals").document(journal_name).collection("files").stream():
-                file_name = file.id
-                entries = file.to_dict().get("entries", [])
-                last_updated = file.to_dict().get("last_updated", datetime.now())
-                
-                journals_to_update[journal_name][file_name] = {
-                    "entries": entries,
-                    "last_updated": last_updated
-                }
-                
-                for entry in entries:
-                    name, email = extract_author_email(entry)
-                    if name and email:
-                        key = f"{name.lower()}_{email.lower()}"
-                        
-                        if key not in all_entries:
-                            all_entries[key] = []
-                            
-                        all_entries[key].append({
-                            "entry": entry,
-                            "journal": journal_name,
-                            "filename": file_name,
-                            "timestamp": last_updated
-                        })
-        
-        # Now identify duplicates and keep only the latest version
-        entries_to_keep = {}
-        duplicates_found = 0
-        
-        for key, entries in all_entries.items():
-            if len(entries) > 1:
-                duplicates_found += len(entries) - 1
-                # Sort by timestamp (newest first)
-                sorted_entries = sorted(entries, key=lambda x: x["timestamp"], reverse=True)
-                # Keep only the first (newest) entry
-                entries_to_keep[key] = sorted_entries[0]
-            else:
-                entries_to_keep[key] = entries[0]
-        
-        if duplicates_found == 0:
-            return True, "No duplicates found"
-        
-        # Now update all journals/files to remove duplicates
-        for journal_name, files in journals_to_update.items():
-            for file_name, file_data in files.items():
-                original_entries = file_data["entries"]
-                updated_entries = []
-                
-                for entry in original_entries:
-                    name, email = extract_author_email(entry)
-                    if name and email:
-                        key = f"{name.lower()}_{email.lower()}"
-                        # Only keep if this is the version we're keeping
-                        if key in entries_to_keep and entries_to_keep[key]["entry"] == entry:
-                            updated_entries.append(entry)
-                
-                # Update the file if entries changed
-                if len(updated_entries) != len(original_entries):
-                    doc_ref = db.collection("journals").document(journal_name).collection("files").document(file_name)
-                    doc_ref.update({
-                        "entries": updated_entries,
-                        "entry_count": len(updated_entries),
-                        "last_updated": datetime.now()
-                    })
-        
-        return True, f"Removed {duplicates_found} duplicate entries, keeping only the latest versions"
-    
-    except Exception as e:
-        return False, f"Error during duplicate removal: {str(e)}"
-
 def get_journal_files(journal):
     db = get_firestore_db()
     if not db or not journal:
@@ -535,6 +577,22 @@ def delete_file(journal, filename):
         return False
         
     try:
+        # First remove all author keys associated with this file
+        entries, _ = download_entries(journal, filename)
+        if entries:
+            entries_list = entries.split('\n\n')
+            batch = db.batch()
+            
+            for entry in entries_list:
+                name, email = extract_author_email(entry)
+                if name and email:
+                    key = f"{name.lower()}_{email.lower()}"
+                    doc_ref = db.collection("author_keys").document(key)
+                    batch.delete(doc_ref)
+            
+            batch.commit()
+        
+        # Then delete the file itself
         db.collection("journals").document(journal).collection("files").document(filename).delete()
         return True
     except Exception as e:
@@ -560,10 +618,10 @@ def delete_journal(journal_name):
         return False
         
     try:
-        # First delete all files in the journal
+        # First delete all files in the journal (which will handle author_keys)
         files_ref = db.collection("journals").document(journal_name).collection("files")
         for file in files_ref.stream():
-            file.reference.delete()
+            delete_file(journal_name, file.id)
         
         # Then delete the journal itself
         db.collection("journals").document(journal_name).delete()
@@ -586,6 +644,26 @@ def update_entry(journal, filename, old_entry, new_entry):
         if doc.exists:
             entries = doc.to_dict().get("entries", [])
             if old_entry in entries:
+                # First update the author key if name/email changed
+                old_name, old_email = extract_author_email(old_entry)
+                new_name, new_email = extract_author_email(new_entry)
+                
+                if old_name != new_name or old_email != new_email:
+                    # Delete old key
+                    old_key = f"{old_name.lower()}_{old_email.lower()}"
+                    db.collection("author_keys").document(old_key).delete()
+                    
+                    # Create new key
+                    new_key = f"{new_name.lower()}_{new_email.lower()}"
+                    db.collection("author_keys").document(new_key).set({
+                        "name": new_name,
+                        "email": new_email,
+                        "journal": journal,
+                        "filename": filename,
+                        "timestamp": datetime.now()
+                    })
+                
+                # Update the entry
                 entries[entries.index(old_entry)] = new_entry
                 doc_ref.update({
                     "entries": entries,
@@ -609,6 +687,13 @@ def delete_entry(journal, filename, entry):
         if doc.exists:
             entries = doc.to_dict().get("entries", [])
             if entry in entries:
+                # Remove from author_keys
+                name, email = extract_author_email(entry)
+                if name and email:
+                    key = f"{name.lower()}_{email.lower()}"
+                    db.collection("author_keys").document(key).delete()
+                
+                # Remove from entries
                 entries.remove(entry)
                 doc_ref.update({
                     "entries": entries,
@@ -695,6 +780,21 @@ def move_file(source_journal, filename, target_journal):
             return False
             
         file_data = doc.to_dict()
+        
+        # Update all author_keys to point to new journal
+        entries = file_data.get("entries", [])
+        batch = db.batch()
+        
+        for entry in entries:
+            name, email = extract_author_email(entry)
+            if name and email:
+                key = f"{name.lower()}_{email.lower()}"
+                key_ref = db.collection("author_keys").document(key)
+                batch.update(key_ref, {
+                    "journal": target_journal
+                })
+        
+        batch.commit()
         
         # Create new document in target journal
         db.collection("journals").document(target_journal).collection("files").document(filename).set(file_data)
@@ -1354,7 +1454,20 @@ def show_entry_module():
                                 for key, dup_list in duplicates.items():
                                     name, email = extract_author_email(dup_list[0]["entry"])
                                     st.write(f"**Author:** {name} ({email})")
-                                    st.write(f"- Found {len(dup_list)} duplicate(s)")
+                                    st.write(f"- Found in: {dup_list[0]['journal']} > {dup_list[0]['filename']}")
+                                    st.write(f"- Original entry date: {dup_list[0]['timestamp'].strftime('%d-%b-%Y') if isinstance(dup_list[0]['timestamp'], datetime) else 'Unknown'}")
+                                    st.write(f"- Number of duplicates: {len(dup_list)}")
+                                    
+                                    if st.button("View Original Entry", key=f"view_{key}"):
+                                        original_content, _ = download_entries(dup_list[0]['journal'], dup_list[0]['filename'])
+                                        if original_content:
+                                            original_entries = original_content.split('\n\n')
+                                            for orig_entry in original_entries:
+                                                if name in orig_entry and email in orig_entry:
+                                                    st.text_area("Original Entry:", value=orig_entry, height=150, disabled=True)
+                                                    break
+                                    
+                                    st.markdown("---")
                         
                         st.session_state.entries = unique_entries
                         st.success(f"{len(unique_entries)} unique entries ready to save")
