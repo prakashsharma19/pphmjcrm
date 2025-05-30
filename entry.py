@@ -305,7 +305,7 @@ def save_entries_with_progress(entries, journal, filename, status_text):
         status_text.text("Checking for duplicates...")
         
         # Process entries in batches
-        batch_size = 50
+        batch_size = 25
         batch = db.batch()
         author_keys_batch = db.batch()
         
