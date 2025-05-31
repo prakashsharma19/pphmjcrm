@@ -91,7 +91,7 @@ def init_session_state():
         if key not in st.session_state:
             st.session_state[key] = default_value
 
-st.set_page_config(page_title="PPH CRM - Test", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="PPH CRM", layout="wide", initial_sidebar_state="expanded")
 init_session_state()
 
 # Helper functions
@@ -1030,17 +1030,18 @@ Entries to format:
                 f"({progress}%) - "
                 f"Estimated time remaining: {format_time(estimated_remaining)}"
             )
-	try:
-				genai.configure(api_key=st.session_state.manual_api_key or os.getenv("GOOGLE_API_KEY"))
-				model = genai.GenerativeModel("gemini-1.5-flash-latest")
-				response = model.generate_content(best_prompt.format(chunk=chunk))
-				if response.text:
-				formatted_parts.append(response.text)
-			except Exception as e:
-				st.error(f"Error: {str(e)}")
-				st.session_state.resume_processing = True  # ? Added this line
-				save_resume_data()
-    		return ""
+        
+        try:
+            genai.configure(api_key=st.session_state.manual_api_key or os.getenv("GOOGLE_API_KEY"))
+            model = genai.GenerativeModel("gemini-1.5-flash-latest")
+            response = model.generate_content(best_prompt.format(chunk=chunk))
+            if response.text:
+                formatted_parts.append(response.text)
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
+            # Save resume data before exiting
+            save_resume_data()
+            return ""
     
     processing_time = time.time() - st.session_state.processing_start_time
     progress_bar.progress(100)
@@ -1250,7 +1251,7 @@ def show_login_page():
                 valid_users = {
                     "prakash": "PPHprakash123@",
                     "mangal": "mangal123@",
-                    "manish": "mKPPH123@",
+                    "manish": "manish123@",
                     "rajeev": "rajeev123@",
                     "ashish": "ashish123@",
                     "arun": "arunazad123@",
