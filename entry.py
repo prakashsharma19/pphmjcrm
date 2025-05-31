@@ -430,6 +430,8 @@ def save_entries_with_progress(entries, journal, filename, status_text):
         
     except Exception as e:
         st.error(f"Error saving entries: {str(e)}")
+        st.session_state.resume_processing = True
+        save_resume_data()
         return False
 
 def check_duplicates(new_entries):
