@@ -91,7 +91,7 @@ def init_session_state():
         if key not in st.session_state:
             st.session_state[key] = default_value
 
-st.set_page_config(page_title="PPH CRM - TEST", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="PPH CRM", layout="wide", initial_sidebar_state="expanded")
 init_session_state()
 
 # Helper functions
@@ -1251,7 +1251,7 @@ def show_login_page():
                 valid_users = {
                     "prakash": "PPHprakash123@",
                     "mangal": "mangal123@",
-                    "manish": "manish123@",
+                    "manish": "mKPPH123@",
                     "rajeev": "rajeev123@",
                     "ashish": "ashish123@",
                     "arun": "arunazad123@",
@@ -2029,4 +2029,4 @@ if __name__ == "__main__":
             st.info("Coming soon!")
 
     st.markdown("---")
-    st.markdown("**PPH CRMT - Contact App Administrator for any help at: [contact@cpsharma.com](mailto:contact@cpsharma.com)**")
+    st.markdown("**PPH CRM - Contact App Administrator for any help at: [contact@cpsharma.com](mailto:contact@cpsharma.com)**")
