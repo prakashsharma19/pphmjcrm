@@ -1030,18 +1030,17 @@ Entries to format:
                 f"({progress}%) - "
                 f"Estimated time remaining: {format_time(estimated_remaining)}"
             )
-        
-        try:
-	genai.configure(api_key=st.session_state.manual_api_key or os.getenv("GOOGLE_API_KEY"))
-    	model = genai.GenerativeModel("gemini-1.5-flash-latest")
-    	response = model.generate_content(best_prompt.format(chunk=chunk))
-    	if response.text:
+	try:
+		genai.configure(api_key=st.session_state.manual_api_key or os.getenv("GOOGLE_API_KEY"))
+    		model = genai.GenerativeModel("gemini-1.5-flash-latest")
+    		response = model.generate_content(best_prompt.format(chunk=chunk))
+    		if response.text:
         	formatted_parts.append(response.text)
-except Exception as e:
-    st.error(f"Error: {str(e)}")
-    st.session_state.resume_processing = True  # ✅ Added this line
-    save_resume_data()
-    return ""
+	except Exception as e:
+    		st.error(f"Error: {str(e)}")
+    		st.session_state.resume_processing = True  # ✅ Added this line
+    		save_resume_data()
+    		return ""
     
     processing_time = time.time() - st.session_state.processing_start_time
     progress_bar.progress(100)
