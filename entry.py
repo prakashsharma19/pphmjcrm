@@ -1038,10 +1038,11 @@ Entries to format:
             if response.text:
                 formatted_parts.append(response.text)
         except Exception as e:
-            st.error(f"Error: {str(e)}")
-            # Save resume data before exiting
-            save_resume_data()
-            return ""
+    st.error(f"Error: {str(e)}")
+    st.session_state.resume_processing = True  # ✅ Add this line
+    save_resume_data()
+    return ""
+
     
     processing_time = time.time() - st.session_state.processing_start_time
     progress_bar.progress(100)
