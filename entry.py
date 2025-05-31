@@ -1039,7 +1039,7 @@ Entries to format:
                 formatted_parts.append(response.text)
         except Exception as e:
             st.error(f"Error: {str(e)}")
-	    st.session_state.resume_processing = True  # ✅ Added this line
+            st.session_state.resume_processing = True
             # Save resume data before exiting
             save_resume_data()
             return ""
