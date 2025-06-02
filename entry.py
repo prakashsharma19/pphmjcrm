@@ -135,18 +135,22 @@ def process_uploaded_file(uploaded_file):
         st.error(f"Error processing file: {str(e)}")
         return []
 
-def save_resume_data():
-    """Save the current processing state for resuming later"""
+def save_resume_data_to_firestore():
+    db = get_firestore_db()
+    if not db:
+        return
+
     resume_data = {
-        'journal': st.session_state.upload_journal if st.session_state.app_mode == "📤 Upload Entries" else st.session_state.resume_journal,
-        'filename': st.session_state.upload_filename if st.session_state.app_mode == "📤 Upload Entries" else st.session_state.resume_filename,
-        'entries': st.session_state.uploaded_entries if st.session_state.app_mode == "📤 Upload Entries" else st.session_state.entries,
-        'duplicates': getattr(st.session_state, 'duplicates', {}),
-        'processed_entries': getattr(st.session_state, 'processed_entries', []),
-        'processing': st.session_state.processing,
-        'app_mode': st.session_state.app_mode,
-        'timestamp': datetime.now().isoformat()
+        'username': st.session_state.username,
+        'journal': st.session_state.resume_journal,
+        'filename': st.session_state.resume_filename,
+        'entries': st.session_state.entries,
+        'duplicates': st.session_state.duplicates,
+        'processed_entries': st.session_state.processed_entries,
+        'timestamp': datetime.now()
     }
+
+    db.collection("resume_data").document(st.session_state.username).set(resume_data)
     
     # Save to session state
     st.session_state.resume_data = resume_data
@@ -157,21 +161,23 @@ def save_resume_data():
     st.session_state.resume_processed_entries = resume_data['processed_entries']
     st.session_state.resume_processing = resume_data['processing']
 
-def check_for_resume_data():
-    """Check if there's processing data to resume"""
-    if st.session_state.resume_data and st.session_state.resume_processing:
+def check_for_resume_data_from_firestore():
+    db = get_firestore_db()
+    if not db:
+        return False
+
+    doc = db.collection("resume_data").document(st.session_state.username).get()
+    if doc.exists:
+        data = doc.to_dict()
+        st.session_state.resume_data = data
+        st.session_state.resume_journal = data.get('journal', '')
+        st.session_state.resume_filename = data.get('filename', '')
+        st.session_state.entries = data.get('entries', [])
+        st.session_state.duplicates = data.get('duplicates', {})
+        st.session_state.processed_entries = data.get('processed_entries', [])
+        st.session_state.resume_processing = True
         return True
     return False
-
-def clear_resume_data():
-    """Clear the resume data"""
-    st.session_state.resume_data = None
-    st.session_state.resume_journal = ""
-    st.session_state.resume_filename = ""
-    st.session_state.resume_entries = []
-    st.session_state.resume_duplicates = {}
-    st.session_state.resume_processed_entries = []
-    st.session_state.resume_processing = False
 
 # Regex processing functions
 def preprocess_with_regex(text):
@@ -1242,7 +1248,7 @@ def show_login_page():
             st.markdown('<div class="header">', unsafe_allow_html=True)
             if logo:
                 st.image(logo, width=150)
-            st.markdown('<div class="app-title">PPH CRM</div>', unsafe_allow_html=True)
+            st.markdown('<div class="app-title">PPH CRM = testing </div>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
         with col2:
             st.markdown("### Login")
@@ -1517,7 +1523,7 @@ def show_entry_module():
                         st.rerun()
                 with col2:
                     if st.button("❌ No, Start Fresh"):
-                        clear_resume_data()
+                        clear_resume_data_from_firestore()
                         st.rerun()
         
         # File upload option for Create Entries
@@ -1583,7 +1589,7 @@ def show_entry_module():
                     if save_entries_with_progress(unique_entries, selected_journal, filename, status_text):
                         st.success(f"Saved {len(unique_entries)} entries to {selected_journal}/{filename}")
                         st.session_state.show_save_section = True
-                        clear_resume_data()
+                        clear_resume_data_from_firestore()
             
         if st.session_state.get('show_save_section', False) and st.session_state.entries:
             st.subheader("Processed Entries")
