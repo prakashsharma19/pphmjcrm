@@ -78,20 +78,15 @@ def init_session_state():
         'save_progress': 0,
         'save_status': "",
         'converting_journal': None,
-        'resume_data': None,
-        'resume_journal': "",
-        'resume_filename': "",
-        'resume_entries': [],
-        'resume_duplicates': {},
-        'resume_processed_entries': [],
-        'resume_processing': False,
-        'show_journals_list': False  # New state for collapsible journals list
+        'show_journals_list': False,
+        'resume_task_id': None,
+        'resume_data_loaded': False
     }
     for key, default_value in session_vars.items():
         if key not in st.session_state:
             st.session_state[key] = default_value
 
-st.set_page_config(page_title="PPH CRM - Test2", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="PPH CRM", layout="wide", initial_sidebar_state="expanded")
 init_session_state()
 
 # Helper functions
@@ -135,49 +130,136 @@ def process_uploaded_file(uploaded_file):
         st.error(f"Error processing file: {str(e)}")
         return []
 
-def save_resume_data_to_firestore():
+# Firestore Resume Functions
+def save_resume_data(task_type, data):
+    """Save resume data to Firestore"""
     db = get_firestore_db()
     if not db:
-        return
-
-    resume_data = {
-        'username': st.session_state.username,
-        'journal': st.session_state.resume_journal,
-        'filename': st.session_state.resume_filename,
-        'entries': st.session_state.entries,
-        'duplicates': st.session_state.duplicates,
-        'processed_entries': st.session_state.processed_entries,
-        'timestamp': datetime.now()
-    }
-
-    db.collection("resume_data").document(st.session_state.username).set(resume_data)
+        return None
     
-    # Save to session state
-    st.session_state.resume_data = resume_data
-    st.session_state.resume_journal = resume_data['journal']
-    st.session_state.resume_filename = resume_data['filename']
-    st.session_state.resume_entries = resume_data['entries']
-    st.session_state.resume_duplicates = resume_data['duplicates']
-    st.session_state.resume_processed_entries = resume_data['processed_entries']
-    st.session_state.resume_processing = resume_data['processing']
+    try:
+        resume_ref = db.collection("resume_tasks")
+        
+        # Generate a task ID if we don't have one
+        if not st.session_state.resume_task_id:
+            st.session_state.resume_task_id = f"{st.session_state.username}_{int(time.time())}"
+        
+        resume_data = {
+            "username": st.session_state.username,
+            "task_type": task_type,
+            "data": data,
+            "timestamp": datetime.now(),
+            "status": "incomplete",
+            "current_chunk": st.session_state.current_chunk,
+            "total_chunks": st.session_state.total_chunks,
+            "app_mode": st.session_state.app_mode
+        }
+        
+        resume_ref.document(st.session_state.resume_task_id).set(resume_data)
+        return st.session_state.resume_task_id
+    except Exception as e:
+        st.error(f"Error saving resume data: {str(e)}")
+        return None
 
-def check_for_resume_data_from_firestore():
+def load_resume_data(task_id):
+    """Load resume data from Firestore"""
+    db = get_firestore_db()
+    if not db:
+        return None
+    
+    try:
+        doc = db.collection("resume_tasks").document(task_id).get()
+        if doc.exists:
+            return doc.to_dict()
+        return None
+    except Exception as e:
+        st.error(f"Error loading resume data: {str(e)}")
+        return None
+
+def get_user_resume_tasks(username):
+    """Get all resume tasks for a user"""
+    db = get_firestore_db()
+    if not db:
+        return []
+    
+    try:
+        tasks_ref = db.collection("resume_tasks").where("username", "==", username).where("status", "==", "incomplete")
+        return [{"id": task.id, **task.to_dict()} for task in tasks_ref.stream()]
+    except Exception as e:
+        st.error(f"Error getting resume tasks: {str(e)}")
+        return []
+
+def mark_task_complete(task_id):
+    """Mark a resume task as complete"""
     db = get_firestore_db()
     if not db:
         return False
+    
+    try:
+        db.collection("resume_tasks").document(task_id).update({"status": "complete"})
+        return True
+    except Exception as e:
+        st.error(f"Error marking task complete: {str(e)}")
+        return False
 
-    doc = db.collection("resume_data").document(st.session_state.username).get()
-    if doc.exists:
-        data = doc.to_dict()
-        st.session_state.resume_data = data
-        st.session_state.resume_journal = data.get('journal', '')
-        st.session_state.resume_filename = data.get('filename', '')
-        st.session_state.entries = data.get('entries', [])
-        st.session_state.duplicates = data.get('duplicates', {})
-        st.session_state.processed_entries = data.get('processed_entries', [])
-        st.session_state.resume_processing = True
+def delete_resume_task(task_id):
+    """Delete a resume task"""
+    db = get_firestore_db()
+    if not db:
+        return False
+    
+    try:
+        db.collection("resume_tasks").document(task_id).delete()
+        return True
+    except Exception as e:
+        st.error(f"Error deleting resume task: {str(e)}")
+        return False
+
+def check_for_resume_tasks():
+    """Check if there are resume tasks for the current user"""
+    if st.session_state.resume_data_loaded:
+        return False
+    
+    tasks = get_user_resume_tasks(st.session_state.username)
+    if tasks:
+        st.session_state.resume_tasks = tasks
         return True
     return False
+
+def resume_task(task_id):
+    """Resume a specific task"""
+    task_data = load_resume_data(task_id)
+    if not task_data:
+        return False
+    
+    try:
+        # Restore the application state
+        st.session_state.app_mode = task_data.get("app_mode", "📝 Create Entries")
+        st.session_state.current_chunk = task_data.get("current_chunk", 0)
+        st.session_state.total_chunks = task_data.get("total_chunks", 0)
+        
+        data = task_data.get("data", {})
+        
+        if task_data["task_type"] == "format_entries":
+            st.session_state.entries = data.get("entries", [])
+            st.session_state.upload_journal = data.get("journal", "")
+            st.session_state.upload_filename = data.get("filename", "")
+            st.session_state.show_save_section = True
+        
+        elif task_data["task_type"] == "upload_entries":
+            st.session_state.uploaded_entries = data.get("entries", [])
+            st.session_state.upload_journal = data.get("journal", "")
+            st.session_state.upload_filename = data.get("filename", "")
+            st.session_state.duplicates = data.get("duplicates", {})
+            st.session_state.processed_entries = data.get("processed_entries", [])
+            st.session_state.show_save_section = True
+        
+        st.session_state.resume_task_id = task_id
+        st.session_state.resume_data_loaded = True
+        return True
+    except Exception as e:
+        st.error(f"Error resuming task: {str(e)}")
+        return False
 
 # Regex processing functions
 def preprocess_with_regex(text):
@@ -436,8 +518,6 @@ def save_entries_with_progress(entries, journal, filename, status_text):
         
     except Exception as e:
         st.error(f"Error saving entries: {str(e)}")
-        st.session_state.resume_processing = True
-        save_resume_data()
         return False
 
 def check_duplicates(new_entries):
@@ -1045,15 +1125,28 @@ Entries to format:
             response = model.generate_content(best_prompt.format(chunk=chunk))
             if response.text:
                 formatted_parts.append(response.text)
+                
+                # Save progress to Firestore after each chunk
+                save_resume_data("format_entries", {
+                    "entries": formatted_entries,
+                    "journal": st.session_state.upload_journal,
+                    "filename": st.session_state.upload_filename,
+                    "current_chunk": i + 1,
+                    "total_chunks": len(chunks)
+                })
         except Exception as e:
             st.error(f"Error: {str(e)}")
-            st.session_state.resume_processing = True
-            save_resume_data()
             return ""
     
     processing_time = time.time() - st.session_state.processing_start_time
     progress_bar.progress(100)
     status_text.text(f"Completed in {format_time(processing_time)}")
+    
+    # Mark task as complete in Firestore
+    if st.session_state.resume_task_id:
+        mark_task_complete(st.session_state.resume_task_id)
+        st.session_state.resume_task_id = None
+    
     return '\n\n'.join(formatted_parts)
 
 def test_service_connections():
@@ -1063,7 +1156,7 @@ def test_service_connections():
     # Test AI
     for attempt in range(max_retries):
         try:
-            api_key = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
+            api_key = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY"))
             if not api_key:
                 st.session_state.ai_status = "Error"
                 st.session_state.ai_error = "No API key provided"
@@ -1105,7 +1198,7 @@ def check_services_status():
     test_service_connections()
 
 def initialize_services():
-    API_KEY = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
+    API_KEY = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY"))
     
     if not API_KEY:
         st.session_state.ai_status = "Error"
@@ -1248,7 +1341,7 @@ def show_login_page():
             st.markdown('<div class="header">', unsafe_allow_html=True)
             if logo:
                 st.image(logo, width=150)
-            st.markdown('<div class="app-title">PPH CRM = testing </div>', unsafe_allow_html=True)
+            st.markdown('<div class="app-title">PPH CRM</div>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
         with col2:
             st.markdown("### Login")
@@ -1495,6 +1588,28 @@ def show_entry_module():
             show_prompt_manager()
             st.markdown("---")
 
+    # Check for resume tasks on first load
+    if not st.session_state.resume_data_loaded and st.session_state.authenticated:
+        if check_for_resume_tasks():
+            with st.expander("⚠️ Resume Incomplete Tasks", expanded=True):
+                st.warning("You have incomplete tasks. Would you like to resume any of them?")
+                
+                for task in st.session_state.resume_tasks:
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.write(f"**Task Type:** {task['task_type']}")
+                        st.write(f"**Started:** {task['timestamp'].strftime('%Y-%m-%d %H:%M') if isinstance(task['timestamp'], datetime) else 'Unknown'}")
+                    with col2:
+                        if st.button(f"Resume {task['id'][-6:]}", key=f"resume_{task['id']}"):
+                            if resume_task(task['id']):
+                                st.rerun()
+                
+                if st.button("Clear All Incomplete Tasks", key="clear_all_tasks"):
+                    for task in st.session_state.resume_tasks:
+                        delete_resume_task(task['id'])
+                    st.session_state.resume_tasks = []
+                    st.rerun()
+
     # Update available journals list
     st.session_state.available_journals = get_available_journals()
 
@@ -1506,25 +1621,6 @@ def show_entry_module():
 
     if st.session_state.app_mode == "📝 Create Entries":
         st.header("📝 Create Entries")
-        
-        # Check for resume data
-        if check_for_resume_data_from_firestore():
-            with st.expander("⚠️ Resume Incomplete Processing", expanded=True):
-                st.warning("You have an incomplete processing session. Would you like to resume?")
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("✅ Yes, Resume"):
-                        st.session_state.entries = st.session_state.resume_entries
-                        st.session_state.upload_journal = st.session_state.resume_journal
-                        st.session_state.upload_filename = st.session_state.resume_filename
-                        st.session_state.duplicates = st.session_state.resume_duplicates
-                        st.session_state.processed_entries = st.session_state.resume_processed_entries
-                        st.session_state.show_save_section = True
-                        st.rerun()
-                with col2:
-                    if st.button("❌ No, Start Fresh"):
-                        clear_resume_data_from_firestore()
-                        st.rerun()
         
         # File upload option for Create Entries
         uploaded_file = st.file_uploader("📄 Or upload a file to process", type=["txt"])
@@ -1545,17 +1641,22 @@ def show_entry_module():
         
         if st.button("✨ Format & Save Entries"):
             if raw_text.strip():
-                # First save the journal and filename for resume capability
-                st.session_state.resume_journal = selected_journal
-                st.session_state.resume_filename = filename
-                
-                # Process the entries
                 status_text = st.empty()
                 formatted = format_entries_chunked(raw_text, status_text)
                 
                 if formatted:
                     formatted_entries = formatted.split('\n\n')
                     st.session_state.entries = formatted_entries
+                    
+                    # Save progress to Firestore
+                    task_id = save_resume_data("format_entries", {
+                        "entries": formatted_entries,
+                        "journal": selected_journal,
+                        "filename": filename
+                    })
+                    
+                    if task_id:
+                        st.session_state.resume_task_id = task_id
                     
                     # Check for duplicates
                     with st.spinner("Checking for duplicates..."):
@@ -1589,7 +1690,11 @@ def show_entry_module():
                     if save_entries_with_progress(unique_entries, selected_journal, filename, status_text):
                         st.success(f"Saved {len(unique_entries)} entries to {selected_journal}/{filename}")
                         st.session_state.show_save_section = True
-                        clear_resume_data_from_firestore()
+                        
+                        # Mark task as complete
+                        if st.session_state.resume_task_id:
+                            mark_task_complete(st.session_state.resume_task_id)
+                            st.session_state.resume_task_id = None
             
         if st.session_state.get('show_save_section', False) and st.session_state.entries:
             st.subheader("Processed Entries")
@@ -1649,6 +1754,16 @@ def show_entry_module():
                 if uploaded_entries:
                     st.session_state.uploaded_entries = uploaded_entries
                     
+                    # Save progress to Firestore
+                    task_id = save_resume_data("upload_entries", {
+                        "entries": uploaded_entries,
+                        "journal": st.session_state.upload_journal,
+                        "filename": st.session_state.upload_filename
+                    })
+                    
+                    if task_id:
+                        st.session_state.resume_task_id = task_id
+                    
                     with st.spinner("Processing entries..."):
                         # Check duplicates and save in one go
                         status_text = st.empty()
@@ -1683,6 +1798,11 @@ def show_entry_module():
                             status_text
                         ):
                             st.success(f"Saved {len(unique_entries)} entries to {st.session_state.upload_journal}/{st.session_state.upload_filename}")
+                            
+                            # Mark task as complete
+                            if st.session_state.resume_task_id:
+                                mark_task_complete(st.session_state.resume_task_id)
+                                st.session_state.resume_task_id = None
                             
                             # Download options
                             col1, col2 = st.columns(2)
