@@ -1156,7 +1156,7 @@ def test_service_connections():
     # Test AI
     for attempt in range(max_retries):
         try:
-            api_key = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY"))
+            api_key = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
             if not api_key:
                 st.session_state.ai_status = "Error"
                 st.session_state.ai_error = "No API key provided"
@@ -1198,7 +1198,7 @@ def check_services_status():
     test_service_connections()
 
 def initialize_services():
-    API_KEY = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY"))
+    API_KEY = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
     
     if not API_KEY:
         st.session_state.ai_status = "Error"
