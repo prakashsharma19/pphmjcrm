@@ -1508,7 +1508,7 @@ def show_entry_module():
         st.header("📝 Create Entries")
         
         # Check for resume data
-        if check_for_resume_data():
+        if check_for_resume_data_from_firestore():
             with st.expander("⚠️ Resume Incomplete Processing", expanded=True):
                 st.warning("You have an incomplete processing session. Would you like to resume?")
                 col1, col2 = st.columns(2)
