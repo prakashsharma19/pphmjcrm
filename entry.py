@@ -1128,7 +1128,7 @@ Entries to format:
                 
                 # Save progress to Firestore after each chunk
                 save_resume_data("format_entries", {
-                    "entries": formatted_entries,
+                    "entries": '\n\n'.join(formatted_parts).split('\n\n'),
                     "journal": st.session_state.upload_journal,
                     "filename": st.session_state.upload_filename,
                     "current_chunk": i + 1,
