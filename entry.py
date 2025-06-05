@@ -1406,7 +1406,7 @@ def show_login_page():
                 valid_users = {
                     "prakash": "PPHprakash123@",
                     "mangal": "mangal123@",
-                    "manish": "manish123@",
+                    "manish": "mKPPH2025$",
                     "rajeev": "rajeev123@",
                     "ashish": "ashish123@",
                     "arun": "arunazad123@",
