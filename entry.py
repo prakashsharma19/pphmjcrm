@@ -1123,12 +1123,12 @@ Rules to Follow:
 2. Only include the most specific University or Institute name (e.g., Harbin Institute of Technology).
 3. If both a College and a University are listed, retain only the University.
 4. Remove all the following:
-	- Postal codes, cities, buildings, room numbers, and internal unit codes.
-	- Lab names, centers, or research groups unless no department or school is present.
-	- Extra metadata like "View in Scopus", "Corresponding Author", "Authors at", their educational degree like Dr, Phd, etc.
+    - Postal codes, cities, buildings, room numbers, and internal unit codes.
+    - Lab names, centers, or research groups unless no department or school is present.
+    - Extra metadata like "View in Scopus", "Corresponding Author", "Authors at", their educational degree like Dr, Phd, etc.
 5. Format with exactly one component per line (Name, Department, University, Country, Email) and no blank lines.
 6. If multiple affiliations are given:
-	- For multiple affiliations, list each author's full name, department, university, country, and email. Do not skip any authors, even if a corresponding author is marked.
+    - For multiple affiliations, list each author's full name, department, university, country, and email. Do not skip any authors, even if a corresponding author is marked.
 7. Preserve proper capitalization, and avoid abbreviations unless officially part of the name.
 8. Never include duplicate information, address fragments, or unrelated affiliations.
 9. Take only "Corresponding authors at" address if given, in multiple address of single author.
@@ -1179,8 +1179,13 @@ Entries to format:
             genai.configure(api_key=st.session_state.manual_api_key or os.getenv("GOOGLE_API_KEY"))
             model = genai.GenerativeModel("gemini-1.5-flash-latest")
             response = model.generate_content(best_prompt.format(chunk=chunk))
+            
             if response.text:
-                formatted_parts.append(response.text)
+                # Clean up the response to ensure consistent formatting
+                formatted_chunk = response.text.strip()
+                # Ensure entries are separated by exactly two newlines
+                formatted_chunk = '\n\n'.join([entry.strip() for entry in formatted_chunk.split('\n\n') if entry.strip()])
+                formatted_parts.append(formatted_chunk)
                 
                 # Save progress to Firestore after each chunk
                 save_resume_data("format_entries", {
@@ -1197,15 +1202,18 @@ Entries to format:
                 })
         except Exception as e:
             st.error(f"Error: {str(e)}")
-            if "overloaded" in str(e).lower():
-                st.warning("The AI model is currently overloaded. Please wait a few moments and try again.")
             return ""
     
     processing_time = time.time() - st.session_state.processing_start_time
     progress_bar.progress(100)
     status_text.text(f"Completed in {format_time(processing_time)}")
     
-    return '\n\n'.join(formatted_parts)
+    # Combine all chunks and ensure consistent formatting
+    final_text = '\n\n'.join(formatted_parts)
+    # Final cleanup to ensure exactly two newlines between entries
+    final_text = '\n\n'.join([entry.strip() for entry in final_text.split('\n\n') if entry.strip()])
+    
+    return final_text
 
 def test_service_connections():
     max_retries = 3
