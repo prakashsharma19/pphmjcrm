@@ -1214,10 +1214,6 @@ Entries to format:
     final_text = '\n\n'.join([entry.strip() for entry in final_text.split('\n\n') if entry.strip()])
     
     return final_text
-
-def test_service_connections():
-    max_retries = 3
-    retry_delay = 2
     
     # Test AI
     for attempt in range(max_retries):
