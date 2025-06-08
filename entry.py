@@ -1956,7 +1956,7 @@ def show_entry_module():
                                             file_name=f"{st.session_state.upload_filename} ({count} entries).txt",
                                             mime="text/plain"
                                         )
-	pass
+
     elif st.session_state.app_mode == "🔍 Search Database":
         st.header("🔍 Search Database")
         search_col1, search_col2 = st.columns([3, 1])
