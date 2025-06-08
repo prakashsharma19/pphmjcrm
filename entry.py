@@ -1257,23 +1257,36 @@ def check_services_status():
     st.session_state.ai_status = "Checking..."
     st.session_state.cloud_error = ""
     st.session_state.ai_error = ""
-    test_service_connections()
-
-def initialize_services():
-    API_KEY = st.session_state.manual_api_key if st.session_state.manual_api_key else os.getenv("GOOGLE_API_KEY")
     
-    if not API_KEY:
-        st.session_state.ai_status = "Error"
-        st.session_state.ai_error = "No valid API key provided"
-        st.session_state.show_api_key_input = True
-        return False
-
+    # Test AI connection
     try:
-        genai.configure(api_key=API_KEY)
-        st.session_state.ai_status = "Connected"
+        api_key = st.session_state.manual_api_key or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            st.session_state.ai_status = "Error"
+            st.session_state.ai_error = "No API key provided"
+        else:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-1.5-flash-latest")
+            response = model.generate_content("Test connection")
+            if response.text:
+                st.session_state.ai_status = "Connected"
     except Exception as e:
         st.session_state.ai_status = "Error"
         st.session_state.ai_error = str(e)
+    
+    # Test Firebase connection
+    try:
+        if initialize_firebase():
+            db = get_firestore_db()
+            if db:
+                db.collection("test").document("test").get()
+                st.session_state.cloud_status = "Connected"
+        else:
+            st.session_state.cloud_status = "Error"
+            st.session_state.cloud_error = "Failed to initialize Firebase"
+    except Exception as e:
+        st.session_state.cloud_status = "Error"
+        st.session_state.cloud_error = str(e)
         st.session_state.show_api_key_input = True
         return False
 
