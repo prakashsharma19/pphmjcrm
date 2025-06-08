@@ -1108,6 +1108,100 @@ def format_entries_chunked(text, status_text):
     progress_bar = st.progress(0)
     status_text.text("Processing...")
     
+    # Create a status container for the spinning indicator
+    status_container = st.empty()
+    
+    # Get the best available prompt
+    best_prompt = """You are an intelligent academic address refiner..."""  # Your full prompt here
+    
+    for i, chunk in enumerate(chunks):
+        st.session_state.current_chunk = i + 1
+        progress = int((i + 1) / len(chunks) * 100)
+        progress_bar.progress(progress)
+        
+        # Update activity time to prevent timeout
+        st.session_state.last_activity_time = time.time()
+        
+        # Calculate estimated time remaining
+        elapsed = time.time() - st.session_state.processing_start_time
+        if i > 0:  # Only estimate after first chunk
+            avg_time_per_chunk = elapsed / (i + 1)
+            remaining_chunks = len(chunks) - (i + 1)
+            estimated_remaining = avg_time_per_chunk * remaining_chunks
+            
+            # Update status with spinning indicator and time remaining
+            status_container.markdown(f"""
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <div class="spinner"></div>
+                <div>
+                    Processing chunk {i+1}/{len(chunks)} ({progress}%)<br>
+                    Estimated time remaining: {format_time(estimated_remaining)}
+                </div>
+            </div>
+            <style>
+                .spinner {{
+                    width: 24px;
+                    height: 24px;
+                    border: 3px solid rgba(0,0,0,0.1);
+                    border-radius: 50%;
+                    border-top-color: #3498db;
+                    animation: spin 1s ease-in-out infinite;
+                }}
+                @keyframes spin {{
+                    to {{ transform: rotate(360deg); }}
+                }}
+            </style>
+            """, unsafe_allow_html=True)
+        
+        try:
+            genai.configure(api_key=st.session_state.manual_api_key or os.getenv("GOOGLE_API_KEY"))
+            model = genai.GenerativeModel("gemini-1.5-flash-latest")
+            
+            # Add retry logic for timeouts
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = model.generate_content(
+                        best_prompt.format(chunk=chunk),
+                        timeout=120  # Increased timeout to 2 minutes
+                    )
+                    if response.text:
+                        formatted_parts.append(response.text)
+                        break
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise e
+                    time.sleep(2 * (attempt + 1))  # Exponential backoff
+            
+            # Save progress to Firestore after each chunk
+            save_resume_data("format_entries", {
+                "entries": entries,
+                "formatted_entries": formatted_parts,
+                "formatted_text": '\n\n'.join(formatted_parts),
+                "journal": st.session_state.upload_journal,
+                "filename": st.session_state.upload_filename,
+                "current_chunk": i + 1,
+                "total_chunks": len(chunks),
+                "show_formatting_results": True,
+                "show_download_section": False,
+                "show_save_section": False
+            })
+            
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
+            if "overloaded" in str(e).lower():
+                st.warning("The AI model is currently overloaded. Please wait a few moments and try again.")
+            elif "timeout" in str(e).lower():
+                st.warning("The request timed out. Please try again with smaller chunks.")
+            return ""
+    
+    processing_time = time.time() - st.session_state.processing_start_time
+    progress_bar.progress(100)
+    status_container.empty()  # Clear the spinner
+    status_text.text(f"✅ Completed in {format_time(processing_time)}")
+    
+    return '\n\n'.join(formatted_parts)
+    
     # Get the best available prompt
     best_prompt = """You are an intelligent academic address refiner. Given a raw academic author affiliation block, clean and format the address into exactly five lines according to the structure below:
 
