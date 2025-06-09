@@ -485,7 +485,7 @@ def show_login_page():
             st.markdown('<div class="header">', unsafe_allow_html=True)
             if logo:
                 st.image(logo, width=150)
-            st.markdown('<div class="app-title">PPH CRM</div>', unsafe_allow_html=True)
+            st.markdown('<div class="app-title">PPH CRM 3</div>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
         with col2:
             st.markdown("### Login")
