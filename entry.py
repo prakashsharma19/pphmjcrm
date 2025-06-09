@@ -95,7 +95,7 @@ def init_session_state():
         if key not in st.session_state:
             st.session_state[key] = default_value
 
-st.set_page_config(page_title="PPH CRM - Testingsss", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="PPH CRM 1", layout="wide", initial_sidebar_state="expanded")
 init_session_state()
 
 # Helper functions
@@ -966,7 +966,7 @@ def show_login_page():
             st.markdown('<div class="header">', unsafe_allow_html=True)
             if logo:
                 st.image(logo, width=150)
-            st.markdown('<div class="app-title">PPH CRM - Testing</div>', unsafe_allow_html=True)
+            st.markdown('<div class="app-title">PPH CRM</div>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
         with col2:
             st.markdown("### Login")
@@ -1866,4 +1866,3 @@ if __name__ == "__main__":
 
     st.markdown("---")
     st.markdown("**PPH CRM - Contact App Administrator for any help at: [contact@cpsharma.com](mailto:contact@cpsharma.com)**")
-
