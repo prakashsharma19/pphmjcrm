@@ -94,7 +94,7 @@ def init_session_state():
         if key not in st.session_state:
             st.session_state[key] = default_value
 
-st.set_page_config(page_title="PPH CRM 2", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="PPH CRM 3", layout="wide", initial_sidebar_state="expanded")
 init_session_state()
 
 # Helper functions
