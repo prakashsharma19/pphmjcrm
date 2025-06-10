@@ -1730,6 +1730,9 @@ def show_entry_module():
                 
             except Exception as e:
                 st.error(f"Error saving entries: {str(e)}")
+                status_text.text("Save failed")
+                if "timeout" in str(e).lower():
+                    st.warning("The operation timed out. Please try again with a smaller batch of entries.")
             finally:
                 st.session_state.processing = False
                 st.rerun()
