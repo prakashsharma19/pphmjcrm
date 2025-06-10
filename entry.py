@@ -1315,43 +1315,43 @@ def apply_theme_settings():
     
     st.markdown(f"""
     <style>
-        .stApp {
-            background-color: #ffffff;
+        .stApp {{
+            background-color: {st.session_state.bg_color};
             color: #333333;
             font-size: {current_font_size};
-        }
-        .css-1d391kg, .css-1y4p8pa {
+        }}
+        .css-1d391kg, .css-1y4p8pa {{
             background-color: #f5f5f5;
-        }
-        .stTextInput>div>div>input, .stTextArea>div>div>textarea {
+        }}
+        .stTextInput>div>div>input, .stTextArea>div>div>textarea {{
             background-color: #ffffff;
             color: #333333;
             font-size: {current_font_size};
             border: 1px solid #ddd;
-        }
-        .st-bb, .st-at, .st-ae, .st-af, .st-ag, .st-ah, .st-ai, .st-aj, .st-ak, .st-al {
+        }}
+        .st-bb, .st-at, .st-ae, .st-af, .st-ag, .st-ah, .st-ai, .st-aj, .st-ak, .st-al {{
             font-size: {current_font_size};
             color: #333333;
-        }
-        .sidebar .sidebar-content {
+        }}
+        .sidebar .sidebar-content {{
             font-size: {current_font_size};
             background-color: #f5f5f5;
             color: #333333;
-        }
-        .stButton>button {
+        }}
+        .stButton>button {{
             color: #ffffff;
             background-color: #3498db;
-        }
-        .stButton>button:hover {
+        }}
+        .stButton>button:hover {{
             background-color: #2980b9;
-        }
-        .stAlert {
+        }}
+        .stAlert {{
             color: #333333;
-        }
-        .st-expander {
+        }}
+        .st-expander {{
             background-color: #ffffff;
             border: 1px solid #ddd;
-        }
+        }}
     </style>
     """, unsafe_allow_html=True)
 
