@@ -1626,7 +1626,7 @@ def show_entry_module():
                         st.rerun()
             
             if st.session_state.create_entry_stage == 'save':
-               st.subheader("Save to Database")
+    st.subheader("Save to Database")
     selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
     filename = st.text_input("Filename:", get_suggested_filename(selected_journal))
     
@@ -1653,7 +1653,7 @@ def show_entry_module():
                 st.session_state.unique_entries = unique_entries
                 st.session_state.duplicates_info = duplicates_info
                 st.session_state.save_complete = True
-                st.session_state.show_save_results = True  # Add this flag
+                st.session_state.show_save_results = True
                 
             except Exception as e:
                 st.error(f"Error saving entries: {str(e)}")
