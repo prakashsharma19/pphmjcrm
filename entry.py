@@ -1727,7 +1727,19 @@ def show_entry_module():
                 st.session_state.show_formatting_results = False
                 st.session_state.formatted_entries = []
                 st.session_state.formatted_text = ""
-                
+
+            try:
+    unique_entries, duplicates_info = save_entries_with_progress(
+        st.session_state.formatted_entries, 
+        selected_journal, 
+        filename, 
+        status_text
+    )
+
+    st.session_state.unique_entries = unique_entries
+    st.session_state.duplicates_info = duplicates_info
+    st.session_state.save_complete = True
+    st.session_state.show_save_results = True  # Add this flag
             except Exception as e:
                 st.error(f"Error saving entries: {str(e)}")
             finally:
