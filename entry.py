@@ -1729,7 +1729,7 @@ def show_entry_module():
                 st.session_state.formatted_text = ""
 
             try:
-    unique_entries, duplicates_info = save_entries_with_progress(
+                unique_entries, duplicates_info = save_entries_with_progress(
         st.session_state.formatted_entries, 
         selected_journal, 
         filename, 
