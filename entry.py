@@ -1626,168 +1626,96 @@ def show_entry_module():
                         st.rerun()
             
             if st.session_state.create_entry_stage == 'save':
-                st.subheader("Save to Database")
-                selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
-                filename = st.text_input("Filename:", get_suggested_filename(selected_journal))
-                
-                if st.button("💾 Save to Database"):
-                    if selected_journal and filename:
-                        status_text = st.empty()
-                        
-                        # Start save process in a separate thread
-                        st.session_state.save_thread = threading.Thread(
-                            target=save_to_database_thread,
-                            args=(st.session_state.formatted_entries, selected_journal, filename, status_text)
-                        )
-                        st.session_state.save_thread.start()
-                        
-                        # Show processing indicator
-                        with st.spinner("Saving entries to database..."):
-                            while st.session_state.save_thread.is_alive():
-                                time.sleep(0.1)
-                        
-                        # After save completes
-                        if st.session_state.save_complete:
-                            st.success(f"Saved {len(st.session_state.unique_entries)} entries to {selected_journal}/{filename}")
-                            
-                            # Show download options
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                # Download formatted entries
-                                formatted_content = "\n\n".join(st.session_state.unique_entries)
-                                st.download_button(
-                                    "📥 Download Saved Entries",
-                                    formatted_content,
-                                    file_name=f"formatted_entries_{selected_journal}_{filename}.txt",
-                                    mime="text/plain"
-                                )
-                            with col2:
-                                # Download database entries
-                                content, count = download_entries(selected_journal, filename)
-                                if content:
-                                    st.download_button(
-                                        "📥 Download Database Entries",
-                                        content,
-                                        file_name=f"{filename} ({count} entries).txt",
-                                        mime="text/plain"
-                                    )
-                            
-                            # Show duplicates if any
-                            if st.session_state.duplicates_info:
-                                st.warning(f"Found {len(st.session_state.duplicates_info)} duplicate entries that were not saved")
-                                with st.expander("🔍 View Duplicate Details", expanded=False):
-                                    for email, dup_list in st.session_state.duplicates_info.items():
-                                        name, _ = extract_author_email(dup_list[0]["entry"])
-                                        st.write(f"**Author:** {name} ({email})")
-                                        st.write(f"- Found in: {dup_list[0]['journal']} > {dup_list[0]['filename']}")
-                                        st.write(f"- Original entry date: {dup_list[0]['timestamp'].strftime('%d-%b-%Y') if isinstance(dup_list[0]['timestamp'], datetime) else 'Unknown'}")
-                                        st.write(f"- Number of duplicates: {len(dup_list)}")
-                                        
-                                        if st.button("👁️ View Original Entry", key=f"view_{email}"):
-                                            original_content, _ = download_entries(dup_list[0]['journal'], dup_list[0]['filename'])
-                                            if original_content:
-                                                original_entries = original_content.split('\n\n')
-                                                for orig_entry in original_entries:
-                                                    if name in orig_entry and email in orig_entry:
-                                                        st.text_area("Original Entry:", value=orig_entry, height=150, disabled=True)
-                                                        break
-                                        
-                                        st.markdown("---")
-                            
-                            # Mark task as complete
-                            if st.session_state.resume_task_id:
-                                mark_task_complete(st.session_state.resume_task_id)
-                                st.session_state.resume_task_id = None
-                            
-                            # Reset the process
-                            st.session_state.create_entry_stage = 'format'
-                            st.session_state.show_formatting_results = False
-                            st.session_state.formatted_entries = []
-                            st.session_state.formatted_text = ""
-                            st.rerun()
-
-    elif st.session_state.app_mode == "📤 Upload Entries":
-        st.header("📤 Upload Formatted Entries")
-        
-        # File upload option
-        uploaded_file = st.file_uploader("📄 Upload formatted entries file", type=["txt"])
-        if uploaded_file:
-            uploaded_entries = process_uploaded_file(uploaded_file)
-            if uploaded_entries:
-                st.session_state.uploaded_entries = uploaded_entries
-                st.write(f"Found {len(uploaded_entries)} entries in the uploaded file")
-                st.text_area("Uploaded Entries Preview (first 5 entries)", 
-                            value="\n\n".join(uploaded_entries[:5]), 
-                            height=200,
-                            disabled=True)
-        
-        if st.session_state.uploaded_entries:
-            selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
-            filename = st.text_input("Filename:", get_suggested_filename(selected_journal))
+    st.subheader("Save to Database")
+    selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
+    filename = st.text_input("Filename:", get_suggested_filename(selected_journal))
+    
+    if st.button("💾 Save to Database"):
+        if selected_journal and filename:
+            status_text = st.empty()
+            progress_bar = st.progress(0)
             
-            if st.button("💾 Save to Database"):
-                if selected_journal and filename:
-                    status_text = st.empty()
-                    
-                    # Start save process in a separate thread
-                    st.session_state.save_thread = threading.Thread(
-                        target=save_to_database_thread,
-                        args=(st.session_state.uploaded_entries, selected_journal, filename, status_text)
+            # Initialize processing state
+            st.session_state.processing = True
+            st.session_state.save_complete = False
+            st.session_state.save_status = "Starting save process..."
+            
+            # Start save process
+            try:
+                # Directly call the save function (no longer using thread)
+                unique_entries, duplicates_info = save_entries_with_progress(
+                    st.session_state.formatted_entries, 
+                    selected_journal, 
+                    filename, 
+                    status_text
+                )
+                
+                # Update session state
+                st.session_state.unique_entries = unique_entries
+                st.session_state.duplicates_info = duplicates_info
+                st.session_state.save_complete = True
+                
+                # Show success message
+                st.success(f"Saved {len(unique_entries)} entries to {selected_journal}/{filename}")
+                
+                # Show download options
+                col1, col2 = st.columns(2)
+                with col1:
+                    formatted_content = "\n\n".join(unique_entries)
+                    st.download_button(
+                        "📥 Download Saved Entries",
+                        formatted_content,
+                        file_name=f"formatted_entries_{selected_journal}_{filename}.txt",
+                        mime="text/plain"
                     )
-                    st.session_state.save_thread.start()
-                    
-                    # Show processing indicator
-                    with st.spinner("Saving entries to database..."):
-                        while st.session_state.save_thread.is_alive():
-                            time.sleep(0.1)
-                    
-                    # After save completes
-                    if st.session_state.save_complete:
-                        st.success(f"Saved {len(st.session_state.unique_entries)} entries to {selected_journal}/{filename}")
-                        
-                        # Show download options
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            # Download formatted entries
-                            formatted_content = "\n\n".join(st.session_state.unique_entries)
-                            st.download_button(
-                                "📥 Download Saved Entries",
-                                formatted_content,
-                                file_name=f"formatted_entries_{selected_journal}_{filename}.txt",
-                                mime="text/plain"
-                            )
-                        with col2:
-                            # Download database entries
-                            content, count = download_entries(selected_journal, filename)
-                            if content:
-                                st.download_button(
-                                    "📥 Download Database Entries",
-                                    content,
-                                    file_name=f"{filename} ({count} entries).txt",
-                                    mime="text/plain"
-                                )
-                        
-                        # Show duplicates if any
-                        if st.session_state.duplicates_info:
-                            st.warning(f"Found {len(st.session_state.duplicates_info)} duplicate entries that were not saved")
-                            with st.expander("🔍 View Duplicate Details", expanded=False):
-                                for email, dup_list in st.session_state.duplicates_info.items():
-                                    name, _ = extract_author_email(dup_list[0]["entry"])
-                                    st.write(f"**Author:** {name} ({email})")
-                                    st.write(f"- Found in: {dup_list[0]['journal']} > {dup_list[0]['filename']}")
-                                    st.write(f"- Original entry date: {dup_list[0]['timestamp'].strftime('%d-%b-%Y') if isinstance(dup_list[0]['timestamp'], datetime) else 'Unknown'}")
-                                    st.write(f"- Number of duplicates: {len(dup_list)}")
-                                    
-                                    if st.button("👁️ View Original Entry", key=f"view_{email}"):
-                                        original_content, _ = download_entries(dup_list[0]['journal'], dup_list[0]['filename'])
-                                        if original_content:
-                                            original_entries = original_content.split('\n\n')
-                                            for orig_entry in original_entries:
-                                                if name in orig_entry and email in orig_entry:
-                                                    st.text_area("Original Entry:", value=orig_entry, height=150, disabled=True)
-                                                    break
-                                    
-                                    st.markdown("---")
+                with col2:
+                    content, count = download_entries(selected_journal, filename)
+                    if content:
+                        st.download_button(
+                            "📥 Download Database Entries",
+                            content,
+                            file_name=f"{filename} ({count} entries).txt",
+                            mime="text/plain"
+                        )
+                
+                # Show duplicates if any
+                if duplicates_info:
+                    st.warning(f"Found {len(duplicates_info)} duplicate entries that were not saved")
+                    with st.expander("🔍 View Duplicate Details", expanded=False):
+                        for email, dup_list in duplicates_info.items():
+                            name, _ = extract_author_email(dup_list[0]["entry"])
+                            st.write(f"**Author:** {name} ({email})")
+                            st.write(f"- Found in: {dup_list[0]['journal']} > {dup_list[0]['filename']}")
+                            st.write(f"- Original entry date: {dup_list[0]['timestamp'].strftime('%d-%b-%Y') if isinstance(dup_list[0]['timestamp'], datetime) else 'Unknown'}")
+                            st.write(f"- Number of duplicates: {len(dup_list)}")
+                            
+                            if st.button("👁️ View Original Entry", key=f"view_{email}"):
+                                original_content, _ = download_entries(dup_list[0]['journal'], dup_list[0]['filename'])
+                                if original_content:
+                                    original_entries = original_content.split('\n\n')
+                                    for orig_entry in original_entries:
+                                        if name in orig_entry and email in orig_entry:
+                                            st.text_area("Original Entry:", value=orig_entry, height=150, disabled=True)
+                                            break
+                            
+                            st.markdown("---")
+                
+                # Mark task as complete
+                if st.session_state.resume_task_id:
+                    mark_task_complete(st.session_state.resume_task_id)
+                    st.session_state.resume_task_id = None
+                
+                # Reset the process
+                st.session_state.create_entry_stage = 'format'
+                st.session_state.show_formatting_results = False
+                st.session_state.formatted_entries = []
+                st.session_state.formatted_text = ""
+                
+            except Exception as e:
+                st.error(f"Error saving entries: {str(e)}")
+            finally:
+                st.session_state.processing = False
+                st.rerun()
                         
                         # Reset the uploaded entries
                         st.session_state.uploaded_entries = []
