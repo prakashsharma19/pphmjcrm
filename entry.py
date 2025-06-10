@@ -1626,7 +1626,7 @@ def show_entry_module():
                         st.rerun()
             
             if st.session_state.create_entry_stage == 'save':
-        st.subheader("Save to Database")
+               st.subheader("Save to Database")
     selected_journal = st.selectbox("Select Journal:", st.session_state.available_journals)
     filename = st.text_input("Filename:", get_suggested_filename(selected_journal))
     
