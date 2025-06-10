@@ -1717,9 +1717,9 @@ def show_entry_module():
                 st.session_state.processing = False
                 st.rerun()
                         
-                        # Reset the uploaded entries
-                        st.session_state.uploaded_entries = []
-                        st.rerun()
+                # Reset the uploaded entries
+                st.session_state.uploaded_entries = []
+                st.rerun()
 
     elif st.session_state.app_mode == "🔍 Search Database":
         st.header("🔍 Search Database")
