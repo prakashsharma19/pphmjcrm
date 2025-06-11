@@ -537,7 +537,50 @@ def save_entries_with_progress(entries, journal, filename, status_text):
     except Exception as e:
         st.error(f"Error saving entries: {str(e)}")
         return False
-
+def delete_author_keys_for_journal(journal_name):
+    """Delete all author keys associated with a specific journal"""
+    db = get_firestore_db()
+    if not db:
+        return False, "Database connection failed"
+        
+    try:
+        # Get all author keys for this journal
+        keys_ref = db.collection("author_keys").where("journal", "==", journal_name)
+        keys = list(keys_ref.stream())
+        
+        if not keys:
+            return True, f"No author keys found for journal '{journal_name}'"
+        
+        # Delete in batches to avoid timeout
+        batch_size = 100
+        deleted_count = 0
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i in range(0, len(keys), batch_size):
+            batch = db.batch()
+            for key in keys[i:i+batch_size]:
+                batch.delete(key.reference)
+                deleted_count += 1
+            
+            batch.commit()
+            
+            # Update progress
+            progress = int((i + batch_size) / len(keys) * 100)
+            progress_bar.progress(min(progress, 100))
+            status_text.text(f"Deleted {deleted_count} of {len(keys)} author keys")
+            
+            # Update last activity to prevent timeout
+            st.session_state.last_activity_time = time.time()
+        
+        progress_bar.progress(100)
+        status_text.text(f"Completed! Deleted {deleted_count} author keys")
+        
+        return True, f"Successfully deleted {deleted_count} author keys for journal '{journal_name}'"
+        
+    except Exception as e:
+        return False, f"Error deleting author keys: {str(e)}"
+        
 def check_duplicates(new_entries):
     """Check for duplicates across all journals using author_keys collection"""
     results = []
