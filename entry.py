@@ -14,9 +14,13 @@ st.markdown("""
 <p style='text-align: center; font-size: 20px; color: #34495e;'>
 👉 Please <strong>update your bookmark</strong> with this new link.
 </p>
+
+<p style='text-align: center; font-size: 18px; color: #7f8c8d;'>
+Need help? Contact us at <a href="mailto:contact@cpsharma.com">contact@cpsharma.com</a>
+</p>
 """, unsafe_allow_html=True)
 
-# Centered bookmark-style button
+# Centered Open & Bookmark Button
 col1, col2, col3 = st.columns([2, 3, 2])
 with col2:
     st.markdown(
