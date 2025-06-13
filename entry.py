@@ -5,7 +5,7 @@ st.set_page_config(page_title="PPH CRM Migrated", layout="centered")
 st.markdown("""
 <h1 style='text-align: center; font-size: 42px; color: #2c3e50;'>📢 PPH CRM Software Has Migrated</h1>
 
-<h2 style='text-align: center; font-size: 26px; color: #e74c3c;'>This application has moved to a new server.</h2>
+<h2 style='text-align: center; font-size: 26px; color: #e74c3c;'>This application has moved to a new server with improved experience.</h2>
 
 <h3 style='text-align: center; color: #2980b9; font-size: 22px;'>
 🔗 <strong><a href="https://pphentry.onrender.com" target="_blank">https://pphentry.onrender.com</a></strong>
@@ -16,7 +16,7 @@ st.markdown("""
 </p>
 
 <p style='text-align: center; font-size: 18px; color: #7f8c8d;'>
-Need help? Contact us at <a href="mailto:contact@cpsharma.com">contact@cpsharma.com</a>
+Contact app administrator for any help <a href="mailto:contact@cpsharma.com">contact@cpsharma.com</a>
 </p>
 """, unsafe_allow_html=True)
 
